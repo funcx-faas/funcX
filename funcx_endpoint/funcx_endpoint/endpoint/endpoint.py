@@ -54,22 +54,66 @@ def complete_endpoint_name():
         yield os.path.basename(os.path.dirname(config_file))
 
 
-def check_pidfile(filepath, match_name, endpoint_name):
+def check_pidfile(filepath, match_name='funcx-endpoint', endpoint_name='', log=False):
     """ Helper function to identify possible dead endpoints
+
+    Returns a record with 'exists' and 'active' fields indicating
+    whether the pidfile exists, and whether the process is active if it does exist
+    (The endpoint can only start correctly if there is no pidfile)
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the pidfile
+
+    match_name : str
+       Name of the process to check for if pidfile exists
+
+    endpoint_name : str
+        endpoint name for debugging purposes
+
+    log : bool
+        whether or not to log instructions for user if pidfile exists
+
     """
     if not os.path.exists(filepath):
-        return
+        return {
+            "exists": 0,
+            "active": 0,
+        }
 
     older_pid = int(open(filepath, 'r').read().strip())
 
+    proc_found = False
     try:
         proc = psutil.Process(older_pid)
         if proc.name() == match_name:
-            logger.info("Endpoint is already active")
+            # this is the only case where the endpoint is active.
+            # If the process name does not match or no process exists,
+            # it means the endpoint has been terminated without proper cleanup
+            proc_found = True
+
     except psutil.NoSuchProcess:
-        logger.info("A prior Endpoint instance appears to have been terminated without proper cleanup")
-        logger.info('''Please cleanup using:
+        pass
+
+    if log:
+        if proc_found:
+            logger.info("Endpoint is already active")
+        else:
+            logger.info("A prior Endpoint instance appears to have been terminated without proper cleanup")
+            logger.info('''Please cleanup using:
     $ funcx-endpoint stop {}'''.format(endpoint_name))
+
+    if proc_found:
+        return {
+            "exists": 1,
+            "active": 1,
+        }
+
+    return {
+        "exists": 1,
+        "active": 0,
+    }
 
 
 def init_endpoint_dir(endpoint_name, endpoint_config=None):
@@ -261,6 +305,14 @@ def start_endpoint(
 
     logger.info(f"Starting endpoint with uuid: {endpoint_uuid}")
 
+    pid_path = os.path.join(endpoint_dir, 'daemon.pid')
+
+    # if the pidfile exists, we should return early because we don't
+    # want to attempt to create a new daemon when one is already
+    # potentially running with the existing pidfile
+    if check_pidfile(pid_path, endpoint_name=name, log=True)['exists']:
+        return
+
     # Create a daemon context
     # If we are running a full detached daemon then we will send the output to
     # log files, otherwise we can piggy back on our stdout
@@ -275,9 +327,7 @@ def start_endpoint(
         context = daemon.DaemonContext(working_directory=endpoint_dir,
                                        umask=0o002,
                                        # lockfile.FileLock(
-                                       pidfile=daemon.pidfile.PIDLockFile(
-                                           os.path.join(endpoint_dir,
-                                                        'daemon.pid')),
+                                       pidfile=daemon.pidfile.PIDLockFile(pid_path),
                                        stdout=stdout,
                                        stderr=stderr,
                                        detach_process=endpoint_config.config.detach_endpoint
@@ -285,8 +335,6 @@ def start_endpoint(
     except Exception as e:
         logger.critical("Caught exception while trying to setup endpoint context dirs")
         logger.critical("Exception : ", e)
-
-    check_pidfile(context.pidfile.path, "funcx-endpoint", name)
 
     # TODO : we need to load the config ? maybe not. This needs testing
     endpoint_config = SourceFileLoader(
@@ -425,7 +473,7 @@ def list_endpoints():
             with open(endpoint_json, 'r') as f:
                 endpoint_info = json.load(f)
                 endpoint_id = endpoint_info['endpoint_id']
-            if os.path.exists(os.path.join(endpoint_dir, 'daemon.pid')):
+            if check_pidfile(os.path.join(endpoint_dir, 'daemon.pid'))['active']:
                 status = 'Active'
             else:
                 status = 'Inactive'
