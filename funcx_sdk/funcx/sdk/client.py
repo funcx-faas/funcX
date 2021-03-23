@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import logging
@@ -7,6 +8,8 @@ from globus_sdk import AuthClient
 
 from fair_research_login import NativeClient, JSONTokenStorage
 
+from funcx.sdk.asynchronous.funcx_task import FuncXTask
+from funcx.sdk.asynchronous.polling_task import PollingTask
 from funcx.sdk.search import SearchHelper, FunctionSearchResults
 
 from funcx.serialize import FuncXSerializer
@@ -48,6 +51,8 @@ class FuncXClient(FuncXErrorHandlingClient):
                  force_login=False, fx_authorizer=None, search_authorizer=None,
                  openid_authorizer=None,
                  funcx_service_address='https://api.funcx.org/v1',
+                 asynchronous=False,
+                 loop=None,
                  **kwargs):
         """ Initialize the client
 
@@ -75,6 +80,16 @@ class FuncXClient(FuncXErrorHandlingClient):
         funcx_service_address: str
         The address of the funcX web service to communicate with.
         Default: https://api.funcx.org/v1
+
+        asynchronous: bool
+        Should the API use asynchronous interactions with the web service? Currently
+        only impacts the run method
+        Default: False
+
+        loop: AbstractEventLoop
+        If asynchronous mode is requested, then you can provide an optional event loop
+        instance. If None, then we will access asyncio.get_event_loop()
+        Default: None
 
         Keyword arguments are the same as for BaseClient.
         """
@@ -118,6 +133,16 @@ class FuncXClient(FuncXErrorHandlingClient):
         user_info = authclient.oauth2_userinfo()
         self.searcher = SearchHelper(authorizer=search_authorizer, owner_uuid=user_info['sub'])
         self.funcx_service_address = funcx_service_address
+
+        self.asynchronous = asynchronous
+        if asynchronous:
+            self.loop = loop if loop else asyncio.get_event_loop()
+
+            # Start up an asynchronous polling loop in the background
+            # Throttle to ten calls per second
+            self.polling_task = PollingTask(self, self.loop)
+        else:
+            self.loop = None
 
     def version_check(self):
         """Check this client version meets the service's minimum supported version.
@@ -284,7 +309,11 @@ class FuncXClient(FuncXErrorHandlingClient):
         Returns
         -------
         task_id : str
-        UUID string that identifies the task
+        UUID string that identifies the task if asynchronous is False
+
+        funcX Task: asyncio.Task
+        A future that will eventually resolve into the function's result if
+        asynchronous is True
         """
         assert endpoint_id is not None, "endpoint_id key-word argument must be set"
         assert function_id is not None, "function_id key-word argument must be set"
@@ -293,18 +322,17 @@ class FuncXClient(FuncXErrorHandlingClient):
         batch.add(*args, endpoint_id=endpoint_id, function_id=function_id, **kwargs)
         r = self.batch_run(batch)
 
-        """
-        Create a future to deal with the result
-        funcx_future = FuncXFuture(self, task_id, async_poll)
+        # If we are presenting the asynch interface then return a asynchio task
+        # that will eventually resolve to the result
+        if self.asynchronous:
+            funcx_task = FuncXTask(r[0])
+            asyncio_task = self.loop.create_task(funcx_task.get_result())
 
-        if not asynchronous:
-            return funcx_future.result()
-
-        # Return the result
-        return funcx_future
-        """
-
-        return r[0]
+            # Add it to the list of tasks to be polled
+            self.polling_task.put(funcx_task)
+            return asyncio_task
+        else:
+            return r[0]
 
     def create_batch(self):
         """
