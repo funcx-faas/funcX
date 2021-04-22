@@ -184,17 +184,20 @@ class ManagerStatusReport(Message):
     """
     type = MessageType.MANAGER_STATUS_REPORT
 
-    def __init__(self, task_statuses):
+    def __init__(self, task_statuses, container_switch_count):
         super().__init__()
         self.task_statuses = task_statuses
+        self.container_switch_count = container_switch_count
 
     @classmethod
     def unpack(cls, msg):
+        container_switch_count = int.from_bytes(msg[:10], 'little')
+        msg = msg[10:]
         jsonified = msg.decode("ascii")
         task_statuses = json.loads(jsonified)
-        return cls(task_statuses)
+        return cls(task_statuses, container_switch_count)
 
     def pack(self):
         # TODO: do better than JSON?
         jsonified = json.dumps(self.task_statuses)
-        return self.type.pack() + jsonified.encode("ascii")
+        return self.type.pack() + self.container_switch_count.to_bytes(10, 'little') + jsonified.encode("ascii")

@@ -64,13 +64,15 @@ class WorkerMap(object):
         self.total_worker_type_counts['unused'] += 1
         self.ready_worker_type_counts['unused'] += 1
 
-    def spin_up_workers(self, next_worker_q, address=None, debug=None, uid=None, logdir=None, worker_port=None):
+    def spin_up_workers(self, next_worker_q, mode='no_container', address=None, debug=None, uid=None, logdir=None, worker_port=None):
         """ Helper function to call 'remove' for appropriate workers in 'new_worker_map'.
 
         Parameters
         ----------
         new_worker_q : queue.Queue()
-           Queue of worker types to be spun up next.
+            Queue of worker types to be spun up next.
+        mode : str
+            Mode of the worker, no_container, singularity, etc.
         address : str
             Address at which to connect to the workers.
         debug : bool
@@ -104,6 +106,7 @@ class WorkerMap(object):
                 try:
                     proc = self.add_worker(worker_id=str(self.worker_id_counter),
                                            worker_type=next_worker_q.pop(0),
+                                           mode=mode,
                                            address=address, debug=debug,
                                            uid=uid,
                                            logdir=logdir,
@@ -146,6 +149,7 @@ class WorkerMap(object):
         List of removed worker types.
         """
         spin_downs = []
+        container_switch_count = 0
         for worker_type in self.total_worker_type_counts:
             if worker_type == 'unused':
                 continue
@@ -163,7 +167,9 @@ class WorkerMap(object):
                 logger.debug("[SPIN DOWN] Removing {} workers of type {}".format(num_remove, worker_type))
             for i in range(num_remove):
                 spin_downs.append(worker_type)
-        return spin_downs
+            if not check_idle:
+                container_switch_count += num_remove
+        return spin_downs, container_switch_count
 
     def add_worker(self, worker_id=str(random.random()),
                    mode='no_container',
@@ -201,6 +207,7 @@ class WorkerMap(object):
                f'--logdir={logdir}/{uid} ')
 
         logger.info("Command string :\n {}".format(cmd))
+        logger.info("Mode: {}".format(mode))
 
         if mode == 'no_container':
             modded_cmd = cmd
@@ -293,3 +300,12 @@ class WorkerMap(object):
 
     def ready_worker_count(self):
         return sum(self.ready_worker_type_counts.values())
+
+    def advertisement(self):
+        ads = {'total': {}, 'free': {}}
+        total = dict(self.total_worker_type_counts)
+        for worker_type in self.pending_worker_type_counts:
+            total[worker_type] = total.get(worker_type, 0) + self.pending_worker_type_counts[worker_type] - self.to_die_count.get(worker_type, 0)
+        ads['total'].update(total)
+        ads['free'].update(self.ready_worker_type_counts)
+        return ads
