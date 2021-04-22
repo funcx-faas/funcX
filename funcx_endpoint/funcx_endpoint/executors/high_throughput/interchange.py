@@ -104,10 +104,13 @@ class Interchange(object):
                  max_workers_per_node=None,
                  mem_per_worker=None,
                  prefetch_capacity=None,
+
                  scheduler_mode=None,
                  container_type=None,
-                 funcx_service_address=None,
+                 container_cmd_options='',
                  worker_mode=None,
+
+                 funcx_service_address=None,
                  scaling_enabled=True,
                  #
                  client_address="127.0.0.1",
@@ -154,6 +157,10 @@ class Interchange(object):
              cores to be assigned to each worker. Oversubscription is possible
              by setting cores_per_worker < 1.0. Default=1
 
+        container_cmd_options: str
+            Container command strings to be added to associated container command.
+            For example, singularity exec {container_cmd_options}
+
         worker_debug : Bool
              Enables worker debug logging.
 
@@ -187,14 +194,17 @@ class Interchange(object):
         self.mem_per_worker = mem_per_worker
         self.cores_per_worker = cores_per_worker
         self.prefetch_capacity = prefetch_capacity
+
         self.scheduler_mode = scheduler_mode
         self.container_type = container_type
+        self.container_cmd_options = container_cmd_options
+        self.worker_mode = worker_mode
+
         self.log_max_bytes = log_max_bytes
         self.log_backup_count = log_backup_count
         self.working_dir = working_dir
         self.provider = provider
         self.worker_debug = worker_debug
-        self.worker_mode = worker_mode
         self.scaling_enabled = scaling_enabled
         #
 
@@ -281,6 +291,7 @@ class Interchange(object):
                                "--hb_period={heartbeat_period} "
                                "--hb_threshold={heartbeat_threshold} "
                                "--worker_mode={worker_mode} "
+                               "--container_cmd_options='{container_cmd_options}' "
                                "--scheduler_mode={scheduler_mode} "
                                "--log_max_bytes={log_max_bytes} "
                                "--log_backup_count={log_backup_count} "
@@ -339,6 +350,7 @@ class Interchange(object):
                                        heartbeat_threshold=self.heartbeat_threshold,
                                        poll_period=self.poll_period,
                                        worker_mode=self.worker_mode,
+                                       container_cmd_options=self.container_cmd_options,
                                        scheduler_mode=self.scheduler_mode,
                                        logdir=working_dir,
                                        log_max_bytes=self.log_max_bytes,

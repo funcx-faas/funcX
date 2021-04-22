@@ -67,15 +67,18 @@ class Config(RepresentationMixin):
 
                  # Scaling mechanics
                  scaling_enabled=True,
+
                  # Connection info
                  worker_ports=None,
                  worker_port_range=(54000, 55000),
                  funcx_service_address='https://api2.funcx.org/v2',
 
-                 # Tuning info
+                 # Container info
                  worker_mode='no_container',
                  scheduler_mode='hard',
                  container_type=None,
+
+                 # Tuning info
                  prefetch_capacity=10,
                  heartbeat_period=30,
                  heartbeat_threshold=120,
@@ -100,10 +103,12 @@ class Config(RepresentationMixin):
         self.worker_port_range = worker_port_range
         self.funcx_service_address = funcx_service_address
 
-        # Tuning info
+        # Container info
         self.worker_mode = worker_mode
         self.scheduler_mode = scheduler_mode
         self.container_type = container_type
+
+        # Tuning info
         self.prefetch_capacity = prefetch_capacity
         self.heartbeat_period = heartbeat_period
         self.heartbeat_threshold = heartbeat_threshold

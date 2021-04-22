@@ -3,8 +3,9 @@ import logging
 import random
 import subprocess
 import time
+import os
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("funcx_manager.worker_map")
 
 
 class WorkerMap(object):
@@ -64,7 +65,15 @@ class WorkerMap(object):
         self.total_worker_type_counts['unused'] += 1
         self.ready_worker_type_counts['unused'] += 1
 
-    def spin_up_workers(self, next_worker_q, address=None, debug=None, uid=None, logdir=None, worker_port=None):
+    def spin_up_workers(self,
+                        next_worker_q,
+                        mode='no_container',
+                        container_cmd_options='',
+                        address=None,
+                        debug=None,
+                        uid=None,
+                        logdir=None,
+                        worker_port=None):
         """ Helper function to call 'remove' for appropriate workers in 'new_worker_map'.
 
         Parameters
@@ -104,6 +113,8 @@ class WorkerMap(object):
                 try:
                     proc = self.add_worker(worker_id=str(self.worker_id_counter),
                                            worker_type=next_worker_q.pop(0),
+                                           container_cmd_options=container_cmd_options,
+                                           mode=mode,
                                            address=address, debug=debug,
                                            uid=uid,
                                            logdir=logdir,
@@ -168,7 +179,7 @@ class WorkerMap(object):
     def add_worker(self, worker_id=str(random.random()),
                    mode='no_container',
                    worker_type='RAW',
-                   container_uri=None,
+                   container_cmd_options="",
                    walltime=1,
                    address=None,
                    debug=None,
@@ -200,12 +211,30 @@ class WorkerMap(object):
                f'-t {worker_type} '
                f'--logdir={logdir}/{uid} ')
 
+        container_uri = None
+        if worker_type != 'RAW':
+            container_uri = worker_type
+
         logger.info("Command string :\n {}".format(cmd))
+        logger.info("Mode: {}".format(mode))
+        logger.info("Container uri: {}".format(container_uri))
+        logger.info("Container cmd options: {}".format(container_cmd_options))
+        logger.info("Worker type: {}".format(worker_type))
 
         if mode == 'no_container':
             modded_cmd = cmd
-        elif mode == 'singularity':
-            modded_cmd = f'singularity run --writable {container_uri} {cmd}'
+        elif mode == 'singularity_reuse':
+            if container_uri is None:
+                logger.warning("No container is specified for singularity mode. "
+                               "Spawning a worker in a raw process instead.")
+                modded_cmd = cmd
+            elif not os.path.exists(container_uri):
+                logger.warning(f"Container uri {container_uri} is not found. "
+                               "Spawning a worker in a raw process instead.")
+                modded_cmd = cmd
+            else:
+                modded_cmd = f'singularity exec {container_cmd_options} {container_uri} {cmd}'
+            logger.info("Command string with singularity:\n {}".format(modded_cmd))
         else:
             raise NameError("Invalid container launch mode.")
 

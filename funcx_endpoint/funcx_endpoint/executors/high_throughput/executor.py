@@ -164,6 +164,10 @@ class HighThroughputExecutor(StatusHandlingExecutor, RepresentationMixin):
         Select the mode of operation from no_container, singularity_reuse, singularity_single_use
         Default: singularity_reuse
 
+    container_cmd_options: str
+        Container command strings to be added to associated container command.
+        For example, singularity exec {container_cmd_options}
+
     task_status_queue : queue.Queue
         Queue to pass updates to task statuses back to the forwarder.
 
@@ -200,6 +204,8 @@ class HighThroughputExecutor(StatusHandlingExecutor, RepresentationMixin):
                  worker_mode='no_container',
                  scheduler_mode='hard',
                  container_type=None,
+                 container_cmd_options='',
+
                  # Tuning info
                  prefetch_capacity=10,
 
@@ -240,6 +246,7 @@ class HighThroughputExecutor(StatusHandlingExecutor, RepresentationMixin):
         # Container specific
         self.scheduler_mode = scheduler_mode
         self.container_type = container_type
+        self.container_cmd_options = container_cmd_options
         # Tuning info
         self.prefetch_capacity = prefetch_capacity
 
@@ -389,7 +396,9 @@ class HighThroughputExecutor(StatusHandlingExecutor, RepresentationMixin):
                                           # "log_max_bytes": self.log_max_bytes,
                                           # "log_backup_count": self.log_backup_count,
                                           "scheduler_mode": self.scheduler_mode,
+                                          "worker_mode": self.worker_mode,
                                           "container_type": self.container_type,
+                                          "container_cmd_options": self.container_cmd_options,
                                           "funcx_service_address": self.funcx_service_address,
                                           "interchange_address": self.address,
                                           "worker_ports": self.worker_ports,
