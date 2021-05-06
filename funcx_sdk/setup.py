@@ -25,6 +25,7 @@ setup(
         "Programming Language :: Python :: 3",
         "Topic :: Scientific/Engineering"
     ],
+    scripts=["funcx/serialize/off_process_checker.py"],
     keywords=[
         "funcX",
         "FaaS",
