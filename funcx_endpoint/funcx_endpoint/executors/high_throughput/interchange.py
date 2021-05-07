@@ -25,6 +25,7 @@ from parsl.app.errors import RemoteExceptionWrapper
 from funcx_endpoint.executors.high_throughput.messages import Message, COMMAND_TYPES, MessageType, Task
 from funcx_endpoint.executors.high_throughput.messages import EPStatusReport, Heartbeat, TaskStatusCode
 from funcx.sdk.client import FuncXClient
+from funcx import set_file_logger
 from funcx_endpoint.executors.high_throughput.interchange_task_dispatch import naive_interchange_task_dispatch
 from funcx.serialize import FuncXSerializer
 
@@ -172,10 +173,14 @@ class Interchange(object):
 
         self.logdir = logdir
         os.makedirs(self.logdir, exist_ok=True)
-        start_file_logger(os.path.join(self.logdir, 'interchange.log'),
-                          level=logging_level,
-                          max_bytes=log_max_bytes,
-                          backup_count=log_backup_count)
+
+        global logger
+        logger = set_file_logger(os.path.join(self.logdir, 'interchange.log'),
+                                 name="interchange",
+                                 level=logging_level,
+                                 max_bytes=log_max_bytes,
+                                 backup_count=log_backup_count)
+
         logger.info("logger location {}, logger filesize: {}, logger backup count: {}".format(logger.handlers,
                                                                                               log_max_bytes,
                                                                                               log_backup_count))
@@ -927,53 +932,6 @@ class Interchange(object):
             logger.debug("[MAIN] The status is {}".format(status))
 
         return status
-
-
-def start_file_logger(filename,
-                      name="interchange",
-                      level=logging.DEBUG,
-                      format_string=None,
-                      max_bytes=256 * 1024 * 1024,
-                      backup_count=1):
-    """Add a stream log handler.
-
-    Parameters
-    ---------
-
-    filename: string
-        Name of the file to write logs to. Set to None to have interchange logging
-        merged in with endpoint logging.
-    name: string
-        Logger name. Default="parsl.executors.interchange"
-    level: logging.LEVEL
-        Set the logging level. Default=logging.DEBUG
-        - format_string (string): Set the format string
-    format_string: string
-        Format string to use.
-    max_bytes: int
-        The maximum bytes per logger file, default: 256MB
-    backup_count: int
-        The number of backup (must be non-zero) per logger file, default: 1
-
-    Returns
-    -------
-        None.
-    """
-    if format_string is None:
-        format_string = "%(asctime)s.%(msecs)03d %(name)s:%(lineno)d [%(levelname)s]  %(message)s"
-
-    global logger
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    if not len(logger.handlers):
-        handler = RotatingFileHandler(filename, maxBytes=max_bytes, backupCount=backup_count)
-        handler.setLevel(level)
-        formatter = logging.Formatter(format_string, datefmt='%Y-%m-%d %H:%M:%S')
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-        logger.info(
-            "logger location {}, logger filesize: {}, logger backup count: {}".format(
-                logger.handlers, max_bytes, backup_count))
 
 
 def starter(comm_q, *args, **kwargs):

@@ -2,6 +2,12 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 
+file_format_string = "%(asctime)s.%(msecs)03d %(name)s:%(lineno)d [%(levelname)s]  %(message)s"
+
+
+stream_format_string = "%(asctime)s %(name)s:%(lineno)d [%(levelname)s]  %(message)s"
+
+
 def set_file_logger(filename,
                     name='funcx',
                     level=logging.DEBUG,
@@ -22,7 +28,7 @@ def set_file_logger(filename,
        -  None
     """
     if format_string is None:
-        format_string = "%(asctime)s.%(msecs)03d %(name)s:%(lineno)d [%(levelname)s]  %(message)s"
+        format_string = file_format_string
 
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)
@@ -46,8 +52,7 @@ def set_stream_logger(name='funcx', level=logging.DEBUG, format_string=None):
          - None
     """
     if format_string is None:
-        # format_string = "%(asctime)s %(name)s [%(levelname)s] Thread:%(thread)d %(message)s"
-        format_string = "%(asctime)s %(name)s:%(lineno)d [%(levelname)s]  %(message)s"
+        format_string = stream_format_string
 
     logger = logging.getLogger(name)
     logger.setLevel(logging.DEBUG)

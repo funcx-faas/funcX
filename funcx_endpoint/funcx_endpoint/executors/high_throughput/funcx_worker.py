@@ -9,7 +9,7 @@ import os
 
 from parsl.app.errors import RemoteExceptionWrapper
 
-from funcx.utils.loggers import set_file_logger
+from funcx import set_file_logger
 from funcx.serialize import FuncXSerializer
 from funcx_endpoint.executors.high_throughput.messages import Message, COMMAND_TYPES, MessageType, Task
 

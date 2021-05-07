@@ -6,7 +6,7 @@ import queue
 from multiprocessing import Queue
 
 from multiprocessing import Process
-from funcx.utils.loggers import set_file_logger
+from funcx import set_file_logger
 
 
 def double(x):

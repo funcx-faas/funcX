@@ -1,6 +1,6 @@
 from funcx_endpoint.executors.high_throughput.executor import HighThroughputExecutor
 import logging
-from funcx.utils.loggers import set_file_logger
+from funcx import set_file_logger
 
 
 def double(x):

@@ -5,7 +5,7 @@ import time
 import pickle
 import logging
 
-from funcx.utils.loggers import set_file_logger
+from funcx import set_file_logger
 from funcx_endpoint.executors.high_throughput.messages import Message
 
 logger = logging.getLogger(__name__)

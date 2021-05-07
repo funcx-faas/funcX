@@ -35,7 +35,7 @@ from parsl.providers import LocalProvider
 
 
 from funcx_endpoint.executors.high_throughput import zmq_pipes
-from funcx.utils.loggers import set_file_logger
+from funcx import set_file_logger
 
 # TODO: YADU There's a bug here which causes some of the log messages to write out to stderr
 # "logging" python3 self.stream.flush() OSError: [Errno 9] Bad file descriptor
@@ -756,8 +756,6 @@ class HighThroughputExecutor(StatusHandlingExecutor, RepresentationMixin):
 
 
 def executor_starter(htex, logdir, endpoint_id, logging_level=logging.DEBUG):
-
-    from funcx.utils.loggers import set_file_logger
 
     stdout = open(os.path.join(logdir, "executor.{}.stdout".format(endpoint_id)), 'w')
     stderr = open(os.path.join(logdir, "executor.{}.stderr".format(endpoint_id)), 'w')
