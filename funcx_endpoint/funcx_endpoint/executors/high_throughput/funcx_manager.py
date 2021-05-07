@@ -35,6 +35,9 @@ TASK_REQUEST_TAG = 11
 HEARTBEAT_CODE = (2 ** 32) - 1
 
 
+logger = None
+
+
 class Manager(object):
     """ Manager manages task execution by the workers
 
@@ -119,6 +122,13 @@ class Manager(object):
         poll_period : int
              Timeout period used by the manager in milliseconds. Default: 10ms
         """
+
+        global logger
+        # This is expected to be used only in unit test
+        if logger is None:
+            logger = set_file_logger(os.path.join(logdir, uid, 'manager.log'),
+                                     name='funcx_manager',
+                                     level=logging.DEBUG)
 
         logger.info("Manager started")
 
@@ -488,8 +498,10 @@ class Manager(object):
 
         logger.debug("[WORKER_REMOVE] Appending KILL message to worker queue {}".format(worker_type))
         self.worker_map.to_die_count[worker_type] += 1
-        self.task_queues[worker_type].put({"task_id": pickle.dumps(b"KILL"),
-                                           "buffer": b'KILL'})
+        task = Task(task_id='KILL',
+                    container_id='RAW',
+                    task_buffer='KILL')
+        self.task_queues[worker_type].put(task)
 
     def start(self):
         """

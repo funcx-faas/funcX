@@ -104,11 +104,13 @@ class FuncXWorker(object):
             container_id = pickle.loads(p_container_id)
             logger.debug("Received task_id:{} with task:{}".format(task_id, msg))
 
-            if msg == b"KILL":
-                logger.info("[KILL] -- Worker KILL message received! ")
-                task_type = b'WRKR_DIE'
-                result = None
-                continue
+            if task_id == "KILL":
+                task = Message.unpack(msg)
+                if task.task_buffer.decode('utf-8') == "KILL":
+                    logger.info("[KILL] -- Worker KILL message received! ")
+                    task_type = b'WRKR_DIE'
+                    result = None
+                    continue
 
             logger.debug("Executing task...")
 
