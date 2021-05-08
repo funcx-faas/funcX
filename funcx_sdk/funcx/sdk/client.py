@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 import logging
+import uuid
 from inspect import getsource
 from packaging.version import parse
 
@@ -8,6 +10,8 @@ from globus_sdk import AuthClient
 
 from fair_research_login import NativeClient, JSONTokenStorage
 
+from funcx.sdk.asynchronous.funcx_task import FuncXTask
+from funcx.sdk.asynchronous.ws_polling_task import WebSocketPollingTask
 from funcx.sdk.search import SearchHelper, FunctionSearchResults
 
 from funcx.serialize import FuncXSerializer
@@ -50,6 +54,8 @@ class FuncXClient(FuncXErrorHandlingClient):
                  openid_authorizer=None,
                  funcx_service_address='https://api2.funcx.org/v2',
                  check_endpoint_version=False,
+                 asynchronous=False,
+                 loop=None,
                  **kwargs):
         """
         Initialize the client
@@ -79,11 +85,22 @@ class FuncXClient(FuncXErrorHandlingClient):
             The address of the funcX web service to communicate with.
             Default: https://api.funcx.org/v2
 
+        asynchronous: bool
+        Should the API use asynchronous interactions with the web service? Currently
+        only impacts the run method
+        Default: False
+
+        loop: AbstractEventLoop
+        If asynchronous mode is requested, then you can provide an optional event loop
+        instance. If None, then we will access asyncio.get_event_loop()
+        Default: None
+
         Keyword arguments are the same as for BaseClient.
 
         """
         self.func_table = {}
         self.funcx_home = os.path.expanduser(funcx_home)
+        self.session_task_group_id = str(uuid.uuid4())
 
         if not os.path.exists(self.TOKEN_DIR):
             os.makedirs(self.TOKEN_DIR)
@@ -124,6 +141,15 @@ class FuncXClient(FuncXErrorHandlingClient):
         self.check_endpoint_version = check_endpoint_version
 
         self.version_check()
+
+        self.asynchronous = asynchronous
+        if asynchronous:
+            self.loop = loop if loop else asyncio.get_event_loop()
+
+            # Start up an asynchronous polling loop in the background
+            self.ws_polling_task = WebSocketPollingTask(self, self.loop, self.session_task_group_id)
+        else:
+            self.loop = None
 
     def version_check(self):
         """Check this client version meets the service's minimum supported version.
@@ -298,7 +324,11 @@ class FuncXClient(FuncXErrorHandlingClient):
         Returns
         -------
         task_id : str
-        UUID string that identifies the task
+        UUID string that identifies the task if asynchronous is False
+
+        funcX Task: asyncio.Task
+        A future that will eventually resolve into the function's result if
+        asynchronous is True
         """
         assert endpoint_id is not None, "endpoint_id key-word argument must be set"
         assert function_id is not None, "function_id key-word argument must be set"
@@ -307,32 +337,28 @@ class FuncXClient(FuncXErrorHandlingClient):
         batch.add(*args, endpoint_id=endpoint_id, function_id=function_id, **kwargs)
         r = self.batch_run(batch)
 
-        """
-        Create a future to deal with the result
-        funcx_future = FuncXFuture(self, task_id, async_poll)
-
-        if not asynchronous:
-            return funcx_future.result()
-
-        # Return the result
-        return funcx_future
-        """
-
         return r[0]
 
-    def create_batch(self):
+    def create_batch(self, task_group_id=None):
         """
         Create a Batch instance to handle batch submission in funcX
 
         Parameters
         ----------
 
+        task_group_id : str
+            Override the session wide session_task_group_id with a different task_group_id for this batch.
+            If task_group_id is not specified, it will default to using the client's session_task_group_id
+
         Returns
         -------
         Batch instance
             Status block containing "status" key.
         """
-        batch = Batch()
+        if not task_group_id:
+            task_group_id = self.session_task_group_id
+
+        batch = Batch(task_group_id=task_group_id)
         return batch
 
     def batch_run(self, batch):
@@ -354,6 +380,7 @@ class FuncXClient(FuncXErrorHandlingClient):
 
         # Send the data to funcX
         r = self.post(servable_path, json_body=data)
+
         task_uuids = []
         for result in r['results']:
             task_id = result['task_uuid']
@@ -363,6 +390,19 @@ class FuncXClient(FuncXErrorHandlingClient):
                 # ideal, as it will raise any error in the multi-response,
                 # but it will do until batch_run is deprecated in favor of Executer
                 handle_response_errors(result)
+
+        if self.asynchronous:
+            task_group_id = r['task_group_id']
+            asyncio_tasks = []
+            for task_id in task_uuids:
+                funcx_task = FuncXTask(task_id)
+                asyncio_task = self.loop.create_task(funcx_task.get_result())
+                asyncio_tasks.append(asyncio_task)
+
+                self.ws_polling_task.add_task(funcx_task)
+            self.ws_polling_task.put_task_group_id(task_group_id)
+            return asyncio_tasks
+
         return task_uuids
 
     def map_run(self, *args, endpoint_id=None, function_id=None, asynchronous=False, **kwargs):
