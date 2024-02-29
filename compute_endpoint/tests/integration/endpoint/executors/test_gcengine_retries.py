@@ -4,7 +4,6 @@ from queue import Queue
 import pytest
 from globus_compute_common import messagepack
 from globus_compute_endpoint.engines import GlobusComputeEngine
-from globus_compute_endpoint.strategies import SimpleStrategy
 from globus_compute_sdk.serialize import ComputeSerializer
 from parsl.providers import LocalProvider
 from tests.utils import ez_pack_function, succeed_after_n_runs
@@ -24,7 +23,8 @@ def gc_engine_with_retries(tmp_path):
             min_blocks=0,
             max_blocks=1,
         ),
-        strategy=SimpleStrategy(interval=0.1, max_idletime=0),
+        strategy=None,
+        max_idletime=0,
     )
     engine._status_report_thread.reporting_period = 1
     queue = Queue()
