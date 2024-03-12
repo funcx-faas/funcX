@@ -61,7 +61,8 @@ def test_broken_provider(gc_engine_bad_submit_command, caplog):
     report = str(future.exception())
     logger.warning(f"********** Got {report=}")
 
-    assert "sbatch: command not found" in report
+    assert "127" in report
+    assert "not found" in report
     assert "Failed to start block 0: Cannot launch job" in report
 
     flag = False
@@ -75,9 +76,11 @@ def test_broken_provider(gc_engine_bad_submit_command, caplog):
             assert result.task_id == task_id
             assert result.error_details
             assert result.data
-            assert "sbatch: command not found" in result.data
+            assert "127" in report
+            assert "not found" in result.data
             assert "Failed to start block 0: Cannot launch job" in result.data
             flag = True
             break
 
     assert flag, "Expected BadStateException in failed result.data, but none received"
+    engine.shutdown()

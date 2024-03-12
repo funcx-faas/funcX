@@ -127,7 +127,8 @@ def test_proc_pool_engine_not_started():
     engine = ProcessPoolEngine(max_workers=2)
 
     with pytest.raises(AssertionError) as pyt_exc:
-        engine.submit(double, 10)
+        future = engine.submit(double, 10)
+        future.result()
     assert "engine has not been started" in str(pyt_exc)
 
     with pytest.raises(AssertionError):
@@ -192,6 +193,7 @@ def test_gcengine_start_pass_through_to_executor(
         "globus_compute_endpoint.engines.globus_compute.HighThroughputExecutor"
     )
     mock_executor.provider = mock.MagicMock()
+    mock_executor.status_polling_interval = 5
 
     run_dir = tmp_path
     scripts_dir = str(tmp_path / "submit_scripts")

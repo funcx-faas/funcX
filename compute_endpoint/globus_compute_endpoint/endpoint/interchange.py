@@ -375,6 +375,7 @@ class EndpointInterchange:
                         raise executor.executor_exception
                     except Exception:
                         log.exception("Engine has failed with an unrecoverrable error")
+                    finally:
                         self.time_to_quit = True
 
                 if self.time_to_quit:

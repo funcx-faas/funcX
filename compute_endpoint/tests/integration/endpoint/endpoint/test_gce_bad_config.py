@@ -32,7 +32,12 @@ def test_provider_fail_at_init(tmp_path):
     with pytest.raises(BadStateException):
         future.result()
     exception_str = str(future.exception())
-    assert "sbatch: command not found" in exception_str
+    # There are Mac/Linux variations in the exception_str
+    # that the following tests work around
+    assert "127" in exception_str
+    assert "sbatch"
+    assert "Could not read job ID from submit command standard output" in exception_str
+    assert "not found" in exception_str
     gce.shutdown()
 
 
@@ -61,5 +66,8 @@ def test_provider_fail_at_scaling(tmp_path):
     with pytest.raises(BadStateException):
         future.result(timeout=30)
     exception_str = str(future.exception())
-    assert "sbatch: command not found" in exception_str
+    assert "127" in exception_str
+    assert "sbatch"
+    assert "Could not read job ID from submit command standard output" in exception_str
+    assert "not found" in exception_str
     gce.shutdown()

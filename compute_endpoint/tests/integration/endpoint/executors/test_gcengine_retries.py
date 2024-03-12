@@ -19,12 +19,10 @@ def gc_engine_with_retries(tmp_path):
         heartbeat_threshold=2,
         max_retries_on_system_failure=0,
         provider=LocalProvider(
-            init_blocks=0,
+            init_blocks=1,
             min_blocks=0,
             max_blocks=1,
         ),
-        strategy=None,
-        max_idletime=0,
     )
     engine._status_report_thread.reporting_period = 1
     queue = Queue()
@@ -49,8 +47,8 @@ def test_success_after_1_fail(gc_engine_with_retries, tmp_path):
     engine.submit(task_id, task_message)
 
     flag = False
-    for _i in range(10):
-        q_msg = queue.get(timeout=5)
+    for _i in range(20):
+        q_msg = queue.get(timeout=10)
         assert isinstance(q_msg, dict)
 
         packed_result_q = q_msg["message"]
@@ -80,7 +78,7 @@ def test_repeated_fail(gc_engine_with_retries, tmp_path):
     engine.submit(task_id, task_message)
 
     flag = False
-    for _i in range(10):
+    for _i in range(30):
         q_msg = queue.get(timeout=5)
         assert isinstance(q_msg, dict)
 

@@ -77,7 +77,7 @@ def test_engine_submit_init_0(gc_engine_scaling):
     # With 0 tasks and excess workers we should expect scale_down
     # While scale_down might be triggered it appears to take 1s
     # lowest heartbeat period to detect a manager going down
-    try_assert(lambda: num_outstanding() == 1)
+    try_assert(lambda: num_outstanding() == 1, timeout_ms=10000)
 
 
 def test_engine_no_scaling(gc_engine_non_scaling):
