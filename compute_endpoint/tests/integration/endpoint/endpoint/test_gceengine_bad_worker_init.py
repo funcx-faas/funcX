@@ -31,7 +31,7 @@ def gc_engine_bad_submit_command(tmp_path):
             max_blocks=1,
             worker_init='echo "BAD SUBMIT COMMAND"; exit 0',
         ),
-        max_idletime=0,
+        job_status_kwargs={"max_idletime": 0, "strategy_period": 0.1},
         strategy="simple",
     )
     queue = Queue()
@@ -60,7 +60,7 @@ def test_bad_submit_command(gc_engine_bad_submit_command, caplog):
     future = engine.submit(task_id=task_id, packed_task=task_message)
 
     with pytest.raises(BadStateException):
-        future.result(timeout=60)
+        future.result(timeout=1)
 
     report = str(future.exception())
     assert "EXIT CODE: 0" in report

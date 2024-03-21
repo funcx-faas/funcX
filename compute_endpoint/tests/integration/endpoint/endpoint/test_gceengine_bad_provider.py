@@ -28,8 +28,8 @@ def gc_engine_bad_submit_command(tmp_path):
             min_blocks=0,
             max_blocks=1,
         ),
-        max_idletime=0,
         strategy="simple",
+        job_status_kwargs={"max_idletime": 0, "strategy_period": 0.1},
     )
     queue = Queue()
     engine.start(endpoint_id=ep_id, run_dir=str(tmp_path), results_passthrough=queue)

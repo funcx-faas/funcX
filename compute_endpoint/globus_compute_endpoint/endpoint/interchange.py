@@ -370,13 +370,9 @@ class EndpointInterchange:
             # gracefully, iterate once a second whether a task has arrived.
             nonlocal num_tasks_forwarded
             while not self._quiesce_event.is_set():
-                if executor.bad_state_is_set:
-                    try:
-                        raise executor.executor_exception
-                    except Exception:
-                        log.exception("Engine has failed with an unrecoverrable error")
-                    finally:
-                        self.time_to_quit = True
+                if executor.executor_exception:
+                    self.time_to_quit = True
+                    log.exception(executor.executor_exception)
 
                 if self.time_to_quit:
                     self.stop()

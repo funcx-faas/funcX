@@ -39,6 +39,7 @@ class GlobusComputeEngine(GlobusComputeEngineBase):
         encrypted: bool = True,
         max_idletime: int = 120,
         strategy: t.Optional[str] = "simple",
+        job_status_kwargs: t.Optional[t.Dict] = None,
         **kwargs,
     ):
         """The ``GlobusComputeEngine`` is a shim over `Parsl's HighThroughputExecutor
@@ -64,6 +65,10 @@ class GlobusComputeEngine(GlobusComputeEngineBase):
            default: 0
 
         strategy: Specify strategy to use from [None, 'simple']
+
+        job_status_kwargs: Kwarg options to be passed through to Parsl's
+           JobStatusPoller class that drives strategy to do auto-scaling.
+           Refer: parsl.readthedocs.io
 
         encrypted: bool
             Flag to enable/disable encryption (CurveZMQ). Default is True.
@@ -94,6 +99,9 @@ class GlobusComputeEngine(GlobusComputeEngineBase):
             )
         self.executor = executor
         self._strategy = strategy
+        # Set defaults for JobStatusPoller
+        self._job_status_kwargs = {"max_idletime": 120.0, "strategy_period": 5.0}
+        self._job_status_kwargs.update(job_status_kwargs or {})
 
     @property
     def max_workers_per_node(self):
@@ -183,7 +191,7 @@ class GlobusComputeEngine(GlobusComputeEngineBase):
         self._status_report_thread.start()
         # Add executor to poller *after* executor has started
         self.job_status_poller = JobStatusPoller(
-            strategy=self._strategy, max_idletime=self.max_idletime
+            strategy=self._strategy, **self._job_status_kwargs
         )
         self.job_status_poller.add_executors([self.executor])
 

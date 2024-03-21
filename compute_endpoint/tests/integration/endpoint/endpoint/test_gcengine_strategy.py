@@ -24,8 +24,8 @@ def gc_engine_scaling(tmp_path):
             min_blocks=0,
             max_blocks=1,
         ),
-        max_idletime=0,
         strategy="simple",
+        job_status_kwargs={"max_idletime": 0, "strategy_period": 0.1},
     )
     queue = Queue()
     engine.start(endpoint_id=ep_id, run_dir=str(tmp_path), results_passthrough=queue)
@@ -47,7 +47,7 @@ def gc_engine_non_scaling(tmp_path):
             max_blocks=1,
         ),
         strategy=None,
-        max_idletime=0,
+        job_status_kwargs={"max_idletime": 0, "strategy_period": 0.1},
     )
     queue = Queue()
     engine.start(endpoint_id=ep_id, run_dir=str(tmp_path), results_passthrough=queue)
@@ -77,7 +77,7 @@ def test_engine_submit_init_0(gc_engine_scaling):
     # With 0 tasks and excess workers we should expect scale_down
     # While scale_down might be triggered it appears to take 1s
     # lowest heartbeat period to detect a manager going down
-    try_assert(lambda: num_outstanding() == 1, timeout_ms=10000)
+    try_assert(lambda: num_outstanding() == 1)
 
 
 def test_engine_no_scaling(gc_engine_non_scaling):
