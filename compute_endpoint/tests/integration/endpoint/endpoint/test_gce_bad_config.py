@@ -5,6 +5,7 @@ import pytest
 from globus_compute_endpoint.engines.globus_compute import GlobusComputeEngine
 from parsl.executors.errors import BadStateException
 from parsl.providers import SlurmProvider
+from tests.utils import double
 
 
 def test_provider_fail_at_init(tmp_path):
@@ -13,7 +14,6 @@ def test_provider_fail_at_init(tmp_path):
     init_blocks = 1
     """
 
-    gce = None
     with mock.patch(
         "parsl.providers.SlurmProvider.status_polling_interval",
         new_callable=mock.PropertyMock,
@@ -22,7 +22,7 @@ def test_provider_fail_at_init(tmp_path):
         gce = GlobusComputeEngine(provider=SlurmProvider(init_blocks=1))
         gce.start(endpoint_id=uuid.uuid4(), run_dir=tmp_path)
 
-    assert gce.bad_state_is_set is False
+    assert gce.bad_state_is_set is False, "Executor should be clean at test-start"
 
     def double(x):
         return x * 2
@@ -31,11 +31,13 @@ def test_provider_fail_at_init(tmp_path):
 
     with pytest.raises(BadStateException):
         future.result()
+
+    assert gce.bad_state_is_set is True, "Executor should be in failed state"
     exception_str = str(future.exception())
     # There are Mac/Linux variations in the exception_str
     # that the following tests work around
     assert "127" in exception_str
-    assert "sbatch"
+    assert "sbatch" in exception_str
     assert "Could not read job ID from submit command standard output" in exception_str
     assert "not found" in exception_str
     gce.shutdown()
@@ -47,7 +49,6 @@ def test_provider_fail_at_scaling(tmp_path):
     This is a slow test because the pollers run at 5s intervals
     """
 
-    gce = None
     with mock.patch(
         "parsl.providers.SlurmProvider.status_polling_interval",
         new_callable=mock.PropertyMock,
@@ -57,9 +58,6 @@ def test_provider_fail_at_scaling(tmp_path):
         gce.start(endpoint_id=uuid.uuid4(), run_dir=tmp_path)
 
     assert gce.bad_state_is_set is False
-
-    def double(x):
-        return x * 2
 
     future = gce.executor.submit(double, {}, 5)
 

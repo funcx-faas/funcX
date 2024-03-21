@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 @pytest.fixture
 def gc_engine_bad_submit_command(tmp_path):
+    """This config is setup to fail *SILENTLY* meaning
+    the block will fail with exit_code:0 so the provider
+    will not track it is a failure.
+    """
     ep_id = uuid.uuid4()
     engine = GlobusComputeEngine(
         address="127.0.0.1",
