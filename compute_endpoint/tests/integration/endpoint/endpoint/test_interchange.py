@@ -186,8 +186,10 @@ def test_no_idle_if_not_configured(mocker, endpoint_uuid, mock_spt, mock_quiesce
     mocker.patch(f"{_MOCK_BASE}ResultPublisher")
 
     reg_info = {"task_queue_info": {}, "result_queue_info": {}}
+    mock_ex = mocker.Mock(endpoint_id=endpoint_uuid)
+    mock_ex.executor_exception = None
     conf = Config(
-        executors=[mocker.Mock(endpoint_id=endpoint_uuid)],
+        executors=[mock_ex],
         heartbeat_period=1,
         idle_heartbeats_soft=0,
     )
@@ -217,6 +219,7 @@ def test_soft_idle_honored(mocker, endpoint_uuid, mock_spt, idle_limit, mock_qui
 
     reg_info = {"task_queue_info": {}, "result_queue_info": {}}
     mock_ex = mocker.Mock(endpoint_id=endpoint_uuid)
+    mock_ex.executor_exception = None
     conf = Config(executors=[mock_ex], idle_heartbeats_soft=idle_limit)
     ei = EndpointInterchange(endpoint_id=endpoint_uuid, config=conf, reg_info=reg_info)
 
@@ -259,6 +262,7 @@ def test_hard_idle_honored(mocker, endpoint_uuid, mock_spt, idle_limit, mock_qui
 
     reg_info = {"task_queue_info": {}, "result_queue_info": {}}
     mock_ex = mocker.Mock(endpoint_id=endpoint_uuid)
+    mock_ex.executor_exception = None
     conf = Config(
         executors=[mock_ex],
         idle_heartbeats_soft=idle_soft_limit,
@@ -296,8 +300,10 @@ def test_unidle_updates_proc_title(mocker, endpoint_uuid, mock_spt, mock_quiesce
     mocker.patch(f"{_MOCK_BASE}ResultPublisher")
 
     reg_info = {"task_queue_info": {}, "result_queue_info": {}}
+    mock_ex = mocker.Mock(endpoint_id=endpoint_uuid)
+    mock_ex.executor_exception = None
     conf = Config(
-        executors=[mocker.Mock(endpoint_id=endpoint_uuid)],
+        executors=[mock_ex],
         heartbeat_period=1,
         idle_heartbeats_soft=1,
         idle_heartbeats_hard=3,
@@ -343,8 +349,10 @@ def test_sends_final_status_message_on_shutdown(mocker, endpoint_uuid, mock_quie
     mocker.patch(f"{_MOCK_BASE}ResultPublisher", return_value=mock_rqp)
 
     reg_info = {"task_queue_info": {}, "result_queue_info": {}}
+    mock_ex = mocker.Mock(endpoint_id=endpoint_uuid)
+    mock_ex.executor_exception = None
     conf = Config(
-        executors=[mocker.Mock(endpoint_id=endpoint_uuid)],
+        executors=[mock_ex],
         idle_heartbeats_soft=1,
         idle_heartbeats_hard=2,
     )
@@ -375,7 +383,9 @@ def test_faithfully_handles_status_report_messages(
     )
     status_report_msg = {"message": pack(status_report)}
     reg_info = {"task_queue_info": {}, "result_queue_info": {}}
-    conf = Config(executors=[mocker.Mock(endpoint_id=endpoint_uuid)])
+    mock_ex = mocker.Mock(endpoint_id=endpoint_uuid)
+    mock_ex.executor_exception = None
+    conf = Config(executors=[mock_ex])
     ei = EndpointInterchange(endpoint_id=endpoint_uuid, config=conf, reg_info=reg_info)
     ei.results_passthrough = mocker.Mock(spec=queue.Queue)
     ei.results_passthrough.get.side_effect = (status_report_msg, queue.Empty)

@@ -6,7 +6,6 @@ from queue import Queue
 
 import pytest
 from globus_compute_endpoint.engines import GlobusComputeEngine
-from globus_compute_endpoint.strategies import SimpleStrategy
 from parsl.providers import LocalProvider
 from tests.utils import double, try_assert
 
@@ -25,7 +24,8 @@ def gc_engine_scaling(tmp_path):
             min_blocks=0,
             max_blocks=1,
         ),
-        strategy=SimpleStrategy(interval=0.1, max_idletime=0),
+        strategy="simple",
+        job_status_kwargs={"max_idletime": 0, "strategy_period": 0.1},
     )
     queue = Queue()
     engine.start(endpoint_id=ep_id, run_dir=str(tmp_path), results_passthrough=queue)
@@ -47,6 +47,7 @@ def gc_engine_non_scaling(tmp_path):
             max_blocks=1,
         ),
         strategy=None,
+        job_status_kwargs={"max_idletime": 0, "strategy_period": 0.1},
     )
     queue = Queue()
     engine.start(endpoint_id=ep_id, run_dir=str(tmp_path), results_passthrough=queue)
@@ -83,7 +84,9 @@ def test_engine_no_scaling(gc_engine_non_scaling):
     """Confirm that Engine works with fixes # of blocks"""
 
     engine = gc_engine_non_scaling
-    assert engine.strategy is None
+
+    assert engine.job_status_poller
+    assert engine._strategy is None
 
     # At the start there should be 0 managers
     outstanding = engine.get_outstanding_breakdown()
