@@ -32,7 +32,7 @@ def run_interchange_process(
     def run_it(reg_info: dict, endpoint_uuid, endpoint_dir):
         mock_exe = MockExecutor()
         mock_exe.endpoint_id = endpoint_uuid
-        mock_exe.bad_state_is_set = False
+        mock_exe.executor_exception = None
 
         if hasattr(request, "param") and request.param:
             config = request.param
