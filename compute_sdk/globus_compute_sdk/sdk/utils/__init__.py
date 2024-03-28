@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import sys
 import typing as t
+import warnings
 from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
@@ -69,3 +71,17 @@ def check_version(task_details: dict | None) -> str | None:
                 f"(worker SDK version: {worker_sdk}; worker OS: {worker_os})"
             )
     return None
+
+
+def get_env_var_with_deprecation(
+    current_name: str, old_name: str, default: str | None = None
+) -> str | None:
+    var_old = os.getenv(old_name)
+    if var_old is not None:
+        warnings.warn(
+            f"{old_name} is deprecated and will be removed in a future relase. "
+            f"Use {current_name} instead."
+        )
+
+    returned_default = var_old if var_old is not None else default
+    return os.getenv(current_name, returned_default)

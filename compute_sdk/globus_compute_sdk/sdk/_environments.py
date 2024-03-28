@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import os
 from urllib.parse import urlparse
+
+from .utils import get_env_var_with_deprecation
 
 
 def _get_envname():
-    return os.getenv(
-        "GLOBUS_SDK_ENVIRONMENT",
-        # Fallback to the old ENV var if GLOBUS_SDK_ENVIRONMENT is not set
-        os.getenv("FUNCX_SDK_ENVIRONMENT", "production"),
+    return get_env_var_with_deprecation(
+        "GLOBUS_SDK_ENVIRONMENT", "FUNCX_SDK_ENVIRONMENT", "production"
     )
 
 

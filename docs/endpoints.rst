@@ -107,8 +107,9 @@ Once started, the endpoint uses a daemon process to run in the background.
     using one identity and try to start an endpoint owned by another identity, it will fail.
 
 
-To start an endpoint using a client identity, rather than as a user, you can export the FUNCX_SDK_CLIENT_ID and FUNCX_SDK_CLIENT_SECRET
-environment variables. This is explained in detail in :ref:`client credentials with globus compute clients`.
+To start an endpoint using a client identity, rather than as a user, you can export the
+``GLOBUS_COMPUTE_CLIENT_ID`` and ``GLOBUS_COMPUTE_CLIENT_SECRET`` environment variables.
+This is explained in detail in :ref:`client credentials with globus compute clients`.
 
 
 Stopping an Endpoint

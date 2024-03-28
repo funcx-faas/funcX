@@ -1,6 +1,7 @@
 import os
 import pathlib
 import uuid
+from contextlib import nullcontext
 from itertools import chain, combinations
 from unittest import mock
 
@@ -19,8 +20,8 @@ from globus_compute_sdk.sdk.login_manager.tokenstore import (
     ensure_compute_dir,
 )
 
-CID_KEY = "FUNCX_SDK_CLIENT_ID"
-CSC_KEY = "FUNCX_SDK_CLIENT_SECRET"
+CID_KEY = "GLOBUS_COMPUTE_CLIENT_ID"
+CSC_KEY = "GLOBUS_COMPUTE_CLIENT_SECRET"
 MOCK_BASE = "globus_compute_sdk.sdk.login_manager"
 
 
@@ -57,6 +58,58 @@ def test_get_client_creds_from_env(randomstring):
 
         assert expected_cid == found_cid
         assert expected_csc == found_csc
+
+
+@pytest.mark.parametrize("funcx_id", ["foo", "", None])
+@pytest.mark.parametrize("funcx_sec", ["foo", "", None])
+@pytest.mark.parametrize("compute_id", ["foo", "", None])
+@pytest.mark.parametrize("compute_sec", ["foo", "", None])
+def test_get_client_creds_deprecation(funcx_id, funcx_sec, compute_id, compute_sec):
+    funcx_id_key = CID_KEY.replace("GLOBUS_COMPUTE", "FUNCX_SDK")
+    funcx_sc_key = CSC_KEY.replace("GLOBUS_COMPUTE", "FUNCX_SDK")
+    env = {
+        key: val
+        for key, val in [
+            (funcx_id_key, funcx_id),
+            (funcx_sc_key, funcx_sec),
+            (CID_KEY, compute_id),
+            (CSC_KEY, compute_sec),
+        ]
+        if val is not None
+    }
+    context = (
+        pytest.warns(UserWarning)
+        if funcx_id is not None or funcx_sec is not None
+        else nullcontext()
+    )
+
+    with mock.patch.dict(os.environ, env):
+        with context as record:
+            found_cid, found_csc = _get_client_creds_from_env()
+
+    if compute_id is not None:
+        assert found_cid == compute_id
+    elif funcx_id is not None:
+        assert found_cid == funcx_id
+    else:
+        assert found_cid is None
+
+    if compute_sec is not None:
+        assert found_csc == compute_sec
+    elif funcx_sec is not None:
+        assert found_csc == funcx_sec
+    else:
+        assert found_csc is None
+
+    if funcx_id is not None:
+        assert any(
+            funcx_id_key in r.message.args[0] for r in record
+        ), f"{funcx_id_key} was set so it should be warned about"
+
+    if funcx_sec is not None:
+        assert any(
+            funcx_sc_key in r.message.args[0] for r in record
+        ), f"{funcx_sc_key} was set so it should be warned about"
 
 
 @pytest.mark.parametrize("legacy_dir_exists", [True, False])
@@ -147,7 +200,7 @@ def test_is_client_login():
             with pytest.raises(ValueError) as err:
                 is_client_login()
 
-    assert "Both FUNCX_SDK_CLIENT_ID and FUNCX_SDK_CLIENT_SECRET" in str(err)
+    assert "Both GLOBUS_COMPUTE_CLIENT_ID and GLOBUS_COMPUTE_CLIENT_SECRET" in str(err)
 
 
 def test_get_client_login(caplog, randomstring):

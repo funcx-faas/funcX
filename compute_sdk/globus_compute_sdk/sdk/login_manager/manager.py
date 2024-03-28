@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 
 def _get_funcx_all_scope() -> str:
     return os.getenv(
-        "FUNCX_SCOPE",
+        "GLOBUS_COMPUTE_SCOPE",
         "https://auth.globus.org/scopes/facd7ccc-c5f4-42aa-916b-a0e270e2c2a9/all",
     )
 

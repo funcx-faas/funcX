@@ -4,8 +4,8 @@ import pytest
 from globus_compute_sdk.sdk.login_manager import AuthorizerLoginManager, LoginManager
 from globus_sdk.scopes import AuthScopes
 
-CID_KEY = "FUNCX_SDK_CLIENT_ID"
-CSC_KEY = "FUNCX_SDK_CLIENT_SECRET"
+CID_KEY = "GLOBUS_COMPUTE_CLIENT_ID"
+CSC_KEY = "GLOBUS_COMPUTE_CLIENT_SECRET"
 _MOCK_BASE = "globus_compute_sdk.sdk.login_manager."
 
 

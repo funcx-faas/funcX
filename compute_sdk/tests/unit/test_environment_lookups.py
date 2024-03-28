@@ -8,6 +8,7 @@ from globus_compute_sdk.sdk._environments import (
 @pytest.fixture(autouse=True)
 def _clear_sdk_env(monkeypatch):
     monkeypatch.delenv("FUNCX_SDK_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("GLOBUS_SDK_ENVIRONMENT", raising=False)
 
 
 def test_web_service_url(monkeypatch):

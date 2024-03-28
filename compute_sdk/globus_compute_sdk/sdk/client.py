@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import typing as t
 import uuid
 import warnings
@@ -34,14 +33,6 @@ class Client:
 
     Holds helper operations for performing common tasks with the Globus Compute service.
     """
-
-    FUNCX_SDK_CLIENT_ID = os.environ.get(
-        "FUNCX_SDK_CLIENT_ID", "4cf29807-cf21-49ec-9443-ff9a3fb9f81c"
-    )
-    FUNCX_SCOPE = os.environ.get(
-        "FUNCX_SCOPE",
-        "https://auth.globus.org/scopes/facd7ccc-c5f4-42aa-916b-a0e270e2c2a9/all",
-    )
 
     def __init__(
         self,

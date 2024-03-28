@@ -8,17 +8,22 @@ https://github.com/globus/globus-cli/blob/main/src/globus_cli/login_manager/clie
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 
 import globus_sdk
+
+from ..utils import get_env_var_with_deprecation
 
 log = logging.getLogger(__name__)
 
 
 def _get_client_creds_from_env() -> tuple[str | None, str | None]:
-    client_id = os.getenv("FUNCX_SDK_CLIENT_ID")
-    client_secret = os.getenv("FUNCX_SDK_CLIENT_SECRET")
+    client_id = get_env_var_with_deprecation(
+        "GLOBUS_COMPUTE_CLIENT_ID", "FUNCX_SDK_CLIENT_ID"
+    )
+    client_secret = get_env_var_with_deprecation(
+        "GLOBUS_COMPUTE_CLIENT_SECRET", "FUNCX_SDK_CLIENT_SECRET"
+    )
     return client_id, client_secret
 
 
@@ -31,7 +36,7 @@ def is_client_login() -> bool:
 
     if bool(client_id) ^ bool(client_secret):
         raise ValueError(
-            "Both FUNCX_SDK_CLIENT_ID and FUNCX_SDK_CLIENT_SECRET must "
+            "Both GLOBUS_COMPUTE_CLIENT_ID and GLOBUS_COMPUTE_CLIENT_SECRET must "
             "be set to use a client identity. Either set both environment "
             "variables, or unset them to use a normal login."
         )

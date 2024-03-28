@@ -196,15 +196,15 @@ Client credentials can be useful if you need an endpoint to run in a service acc
 
 The Globus Compute SDK supports use of Globus Auth client credentials for login, if you have `registered a client. <https://docs.globus.org/api/auth/developer-guide/#register-app>`_
 
-To use client credentials, you must set the envrionment variables **FUNCX_SDK_CLIENT_ID** to your client ID, and **FUNCX_SDK_CLIENT_SECRET** to your client secret.
+To use client credentials, you must set the envrionment variables **GLOBUS_COMPUTE_CLIENT_ID** to your client ID, and **GLOBUS_COMPUTE_CLIENT_SECRET** to your client secret.
 
 When these envrionment variables are set they will take priority over any other credentials on the system and the Client will assume the identity of the client app.
 This also applies when starting a Globus Compute endpoint.
 
 .. code:: bash
 
-  $ export FUNCX_SDK_CLIENT_ID="b0500dab-ebd4-430f-b962-0c85bd43bdbb"
-  $ export FUNCX_SDK_CLIENT_SECRET="ABCDEFGHIJKLMNOP0123456789="
+  $ export GLOBUS_COMPUTE_CLIENT_ID="b0500dab-ebd4-430f-b962-0c85bd43bdbb"
+  $ export GLOBUS_COMPUTE_CLIENT_SECRET="ABCDEFGHIJKLMNOP0123456789="
 
 .. note:: Globus Compute clients and endpoints will use the client credentials if they are set, so it is important to ensure the client submitting requests has access to an endpoint.
 
@@ -228,7 +228,7 @@ The AuthorizerLoginManager can be used to simply return static tokens and enable
       https://auth.globus.org/scopes/facd7ccc-c5f4-42aa-916b-a0e270e2c2a9/all
 
 
-More details on the Globus Compute login manager prototcol are available `here. <https://github.com/funcx-faas/funcX/blob/main/funcx_sdk/funcx/sdk/login_manager/protocol.py>`_
+More details on the Globus Compute login manager prototcol are available `here. <https://github.com/funcx-faas/funcX/blob/main/compute_sdk/globus_compute_sdk/sdk/login_manager/protocol.py>`_
 
 
 .. code:: python

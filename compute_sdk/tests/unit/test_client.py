@@ -17,7 +17,7 @@ from globus_compute_sdk.serialize.concretes import SELECTABLE_STRATEGIES
 
 @pytest.fixture(autouse=True)
 def _clear_sdk_env(monkeypatch):
-    monkeypatch.delenv("FUNCX_SDK_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("GLOBUS_COMPUTE_ENVIRONMENT", raising=False)
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ def test_client_init_sets_addresses_by_env(
         kwargs["environment"] = env
     elif usage_method == "env_var":
         if env is not None:
-            monkeypatch.setenv("FUNCX_SDK_ENVIRONMENT", env)
+            monkeypatch.setenv("GLOBUS_SDK_ENVIRONMENT", env)
     else:
         raise NotImplementedError
 

@@ -865,7 +865,9 @@ def test_endpoint_login(mocker, caplog, force, is_client, logged_in):
         assert "Already logged in" in caplog.text
 
 
-@pytest.mark.parametrize("env_var", ["FUNCX_SDK_CLIENT_ID", "FUNCX_SDK_CLIENT_SECRET"])
+@pytest.mark.parametrize(
+    "env_var", ["GLOBUS_COMPUTE_CLIENT_ID", "GLOBUS_COMPUTE_CLIENT_SECRET"]
+)
 @pytest.mark.parametrize("force", [True, False], ids=["forced", "unforced"])
 def test_endpoint_login_handles_partial_client_login_state(monkeypatch, env_var, force):
     monkeypatch.setenv(env_var, "some_uuid")
