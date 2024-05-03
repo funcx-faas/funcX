@@ -150,11 +150,10 @@ dist: $(PREREQS_TARBALL_NAME) _dist    ##-Make the dist/ directory with prereqs 
 _setup_dist_for_deb:
 	(   cd dist/ \
 	 && cp -R ../debian ./ \
-	 && mv debian/changelog.in.in debian/changelog \
-	 && sed -i debian/changelog \
+	 && mv debian/changelog.in.in debian/changelog.in \
+	 && sed -i debian/changelog.in \
 	    -e "s/@PACKAGE_NAME@/$(PKG_NAME)/g" \
 	    -e "s/@PACKAGE_VERSION@/$(PKG_VERSION)/g" \
-	    -e "s/@distro@/$(OS_CODENAME)/g" \
 	 && sed -i debian/control \
 	    -e "s/@PACKAGE_NAME@/$(PKG_NAME)/g" \
 	    -e "s/@PIP_NAME@/$(PIP_NAME_D)/g" \

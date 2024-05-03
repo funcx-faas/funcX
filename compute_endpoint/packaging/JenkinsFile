@@ -19,9 +19,11 @@ pipeline {
         stage ("Prep source") {
             agent {label "package_creator"}
             steps {
-                checkout scm
                 script {
-                    env.SOURCE_STASH_NAME = "${UUID.randomUUID()}";
+                    def scmVars = checkout scm
+                    env.BRANCH_NAME = scmVars.GIT_BRANCH.replace("origin/", "")
+                    env.SOURCE_STASH_NAME = "${UUID.randomUUID()}"
+                    echo "env.BRANCH_NAME = ${env.BRANCH_NAME}"
                     sh "git clean -fdx"
 
                     dir("compute_endpoint/packaging/") {
