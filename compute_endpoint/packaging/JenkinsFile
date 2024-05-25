@@ -21,29 +21,87 @@ pipeline {
             steps {
                 script {
                     def scmVars = checkout scm
+                    if (env.BRANCH_OR_TAG != null && env.BRANCH_OR_TAG != "") {
+                        sh "git checkout ${env.BRANCH_OR_TAG}"
+                    }
                     env.BRANCH_NAME = scmVars.GIT_BRANCH.replaceFirst(/^.*origin\//, "")
+                    env.TAG_NAME = sh(returnStdout: true, script: "git tag --contains | head -1").trim()
                     env.SOURCE_STASH_NAME = "${UUID.randomUUID()}"
                     echo "env.BRANCH_NAME = ${env.BRANCH_NAME}"
                     sh "git clean -fdx"
 
-                    dir("compute_endpoint/packaging/") {
-                        sh(script: "make show_vars")
-                        sh(script: "make setup_dist_for_deb setup_dist_for_rpm")
-                        sh "mv dist/ ${env.SOURCE_STASH_NAME}"
-                        stash(name: env.SOURCE_STASH_NAME, includes: "${env.SOURCE_STASH_NAME}/**/*")
-                    }
+//                     dir("compute_endpoint/packaging/") {
+//                         sh(script: "make show_vars")
+//                         sh(script: "make setup_dist_for_deb setup_dist_for_rpm")
+//                         sh "mv dist/ ${env.SOURCE_STASH_NAME}"
+//                         stash(name: env.SOURCE_STASH_NAME, includes: "${env.SOURCE_STASH_NAME}/**/*")
+//                     }
+//
+//                     def venv_py = "${env.WORKSPACE}/compute_endpoint/packaging/venv/bin/python"
+//                     def py_full_version = sh(script: "'${venv_py}' -c 'import sys; print(\"{}.{}\".format(*sys.version_info))'", returnStdout: true).trim()
+//                     def (py_epoch_version, py_major_version) = py_full_version.tokenize(".")
+//                     def pkg_version = "not yet set"
+//
+//                     dir("compute_endpoint/") {
+//                         env.PACKAGE_VERSION = sh(script: "${venv_py} setup.py --version", returnStdout: true).trim().replace("-", "~")
+//                         echo "pkg_version = ${env.PACKAGE_VERSION}"
+//                     }
+//                     env.PKG_TARBALL = "globus_compute_endpoint-${env.PACKAGE_VERSION.replace("~", "")}.tar.gz"
+//                     env.PREREQS_TARBALL = "globus_compute_endpoint-prereqs-py${py_epoch_version}${py_major_version}-${env.PACKAGE_VERSION}.tar.gz"
 
-                    def venv_py = "${env.WORKSPACE}/compute_endpoint/packaging/venv/bin/python"
-                    def py_full_version = sh(script: "'${venv_py}' -c 'import sys; print(\"{}.{}\".format(*sys.version_info))'", returnStdout: true).trim()
-                    def (py_epoch_version, py_major_version) = py_full_version.tokenize(".")
-                    def pkg_version = "not yet set"
 
-                    dir("compute_endpoint/") {
-                        env.PACKAGE_VERSION = sh(script: "${venv_py} setup.py --version", returnStdout: true).trim().replace("-", "~")
-                        echo "pkg_version = ${env.PACKAGE_VERSION}"
+                echo "Creating publish-results script"
+
+                def pull = getPullRequest()
+                def epic = getClubhouseEpic()
+                def branch_name = getBranchName()
+                def default_branch = getDefaultBranch()
+                def tag = getTag()
+                if (branch_name != null && !pull) {
+                    // If this is a tag, then Jenkins sets BRANCH_NAME to the tag,
+                    // so we need to figure out if this is tag is actually part of
+                    // the main branch.
+                    def branch_name_is_a_tag = (branch_name == env.TAG_NAME)
+                    echo "branch name = ${branch_name}, env.TAG_NAME = ${env.TAG_NAME}, default_branch=${getDefaultBranch()}"
+                    def tag_is_on_default_branch = (
+                        branch_name_is_a_tag
+                        && tagIsOnBranch(env.TAG_NAME, default_branch)
+                    )
+                    echo "branch_name_is_a_tag = ${branch_name_is_a_tag}, tag_is_on_default_branch=${tag_is_on_default_branch}"
+
+                    if ((! branch_name_is_a_tag) && branch_name != default_branch) {
+                        non_default_branch_name = branch_name
+                    } else if ((branch_name != null && branch_name == default_branch)
+                            || tag_is_on_default_branch) {
+                        if (env.STABLE_TAG) {
+                            echo "Using stable tag pattern ${env.STABLE_TAG}"
+                            echo "Replacing \${PACKAGE_NAME} with ${package_name}"
+                            echo "Replacing \${PACKAGE_VERSION} with ${package_version}"
+                        } else {
+                            echo "Using default stable tag pattern v${package_version}"
+                        }
+                        def stable_tag = (env.STABLE_TAG
+                            ? env.STABLE_TAG.replace('${PACKAGE_NAME}', package_name)
+                                .replace('${PACKAGE_VERSION}', package_version)
+                            : "v${package_version}"
+                        )
+                        publish_to_unstable = true
+
+                        if (is_release_candidate(package_version)) {
+                            publish_to_testing = true
+                        } else if (tag == stable_tag
+                                || (tag =~ "^${stable_tag}-\\d+\$").matches()) {
+                            publish_to_testing = true
+                            publish_to_stable = true
+                        }
                     }
-                    env.PKG_TARBALL = "globus_compute_endpoint-${env.PACKAGE_VERSION.replace("~", "")}.tar.gz"
-                    env.PREREQS_TARBALL = "globus_compute_endpoint-prereqs-py${py_epoch_version}${py_major_version}-${env.PACKAGE_VERSION}.tar.gz"
+                }
+
+                sh "/bin/false"
+
+
+
+//
                 }
             }
         }
