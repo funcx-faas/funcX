@@ -97,6 +97,17 @@ pipeline {
                     }
                 }
 
+                echo "pull           = ${pull}"
+                echo "epic           = ${epic}"
+                echo "branch_name    = ${branch_name}"
+                echo "default_branch = ${default_branch}"
+                echo "tag            = ${tag}"
+                echo "branch_name_is_a_tag = ${branch_name_is_a_tag}"
+                echo "tag_is_on_default_branch = ${tag_is_on_default_branch}"
+                echo "---------------"
+                echo "publish_to_unstable = ${publish_to_unstable}"
+                echo "publish_to_testing  = ${publish_to_testing}"
+                echo "publish_to_stable   = ${publish_to_stable}"
                 sh "/bin/false"
 
 
