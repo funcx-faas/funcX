@@ -2,6 +2,11 @@
 
 @Library('gcs-build-scripts') _
 
+@NonCPS
+def is_release_candidate(package_version) {
+    return package_version ==~ /.*~?rc[0-9]+(-[0-9]+)?$/
+}
+
 pipeline {
     agent none
     options {
@@ -21,14 +26,22 @@ pipeline {
             steps {
                 script {
                     def scmVars = checkout scm
+                    sh "git clean -fdx"
+                    sh "git fetch --prune --prune-tags"
+                    env.BRANCH_NAME = sh(returnStdout: true, script: "git rev-parse --abbrev-ref HEAD").trim()
+
                     if (env.BRANCH_OR_TAG != null && env.BRANCH_OR_TAG != "") {
                         sh "git checkout ${env.BRANCH_OR_TAG}"
+                        env.BRANCH_NAME = env.BRANCH_OR_TAG
                     }
-                    env.BRANCH_NAME = scmVars.GIT_BRANCH.replaceFirst(/^.*origin\//, "")
+
                     env.TAG_NAME = sh(returnStdout: true, script: "git tag --contains | head -1").trim()
+                    if (env.TAG_NAME != "") {
+                        env.BRANCH_NAME = env.TAG_NAME
+                    }
+
                     env.SOURCE_STASH_NAME = "${UUID.randomUUID()}"
                     echo "env.BRANCH_NAME = ${env.BRANCH_NAME}"
-                    sh "git clean -fdx"
 
 //                     dir("compute_endpoint/packaging/") {
 //                         sh(script: "make show_vars")
@@ -49,14 +62,25 @@ pipeline {
 //                     env.PKG_TARBALL = "globus_compute_endpoint-${env.PACKAGE_VERSION.replace("~", "")}.tar.gz"
 //                     env.PREREQS_TARBALL = "globus_compute_endpoint-prereqs-py${py_epoch_version}${py_major_version}-${env.PACKAGE_VERSION}.tar.gz"
 
+                dir("compute_endpoint/packaging/") {
+                    sh(script: "make show_vars")
+                }
+                def venv_py = "${env.WORKSPACE}/compute_endpoint/packaging/venv/bin/python"
+                dir("compute_endpoint/") {
+                    env.PACKAGE_VERSION = sh(script: "${venv_py} setup.py --version", returnStdout: true).trim().replace("-", "~")
+                    echo "pkg_version = ${env.PACKAGE_VERSION}"
+                }
 
-                echo "Creating publish-results script"
-
+                def package_version = env.PACKAGE_VERSION
                 def pull = getPullRequest()
                 def epic = getClubhouseEpic()
                 def branch_name = getBranchName()
                 def default_branch = getDefaultBranch()
                 def tag = getTag()
+                def non_default_branch_name=""
+                def publish_to_unstable = false
+                def publish_to_testing = false
+                def publish_to_stable = false
                 if (branch_name != null && !pull) {
                     // If this is a tag, then Jenkins sets BRANCH_NAME to the tag,
                     // so we need to figure out if this is tag is actually part of
@@ -95,19 +119,20 @@ pipeline {
                             publish_to_stable = true
                         }
                     }
+                    echo "pull           = ${pull}"
+                    echo "epic           = ${epic}"
+                    echo "branch_name    = ${branch_name}"
+                    echo "default_branch = ${default_branch}"
+                    echo "tag            = ${tag}"
+                    echo "non_default_branch_name = ${non_default_branch_name}"
+                    echo "branch_name_is_a_tag = ${branch_name_is_a_tag}"
+                    echo "tag_is_on_default_branch = ${tag_is_on_default_branch}"
+                    echo "---------------"
+                    echo "publish_to_unstable = ${publish_to_unstable}"
+                    echo "publish_to_testing  = ${publish_to_testing}"
+                    echo "publish_to_stable   = ${publish_to_stable}"
                 }
 
-                echo "pull           = ${pull}"
-                echo "epic           = ${epic}"
-                echo "branch_name    = ${branch_name}"
-                echo "default_branch = ${default_branch}"
-                echo "tag            = ${tag}"
-                echo "branch_name_is_a_tag = ${branch_name_is_a_tag}"
-                echo "tag_is_on_default_branch = ${tag_is_on_default_branch}"
-                echo "---------------"
-                echo "publish_to_unstable = ${publish_to_unstable}"
-                echo "publish_to_testing  = ${publish_to_testing}"
-                echo "publish_to_stable   = ${publish_to_stable}"
                 sh "/bin/false"
 
 
