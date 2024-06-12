@@ -798,7 +798,7 @@ class Executor(concurrent.futures.Executor):
                 print(gcx.get_worker_hardware_details())
         """
 
-        return self.submit(run_hardware_report).result()
+        return self.submit(run_hardware_report, "Compute Endpoint worker").result()
 
     def _task_submitter_impl(self) -> None:
         """

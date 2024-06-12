@@ -4,7 +4,7 @@ import os
 import pathlib
 
 import pytest
-from globus_compute_endpoint.self_diagnostic import cat
+from globus_compute_sdk.sdk.diagnostic import cat
 
 
 def test_cat_handles_binary_files_gracefully(fs):

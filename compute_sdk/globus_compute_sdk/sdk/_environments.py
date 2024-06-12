@@ -4,6 +4,8 @@ from urllib.parse import urlparse
 
 from .utils import get_env_var_with_deprecation
 
+TUTORIAL_EP_UUID = "4b116d3c-1703-4f8f-9f6f-39921e5864df"
+
 
 def _get_envname():
     return get_env_var_with_deprecation(

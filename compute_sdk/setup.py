@@ -98,4 +98,9 @@ setup(
         "Changelog": "https://globus-compute.readthedocs.io/en/latest/changelog.html",  # noqa: E501
         "Upgrade to Globus Compute": "https://globus-compute.readthedocs.io/en/latest/funcx_upgrade.html",  # noqa: E501
     },
+    entry_points={
+        "console_scripts": [
+            "globus-compute-diagnostic=globus_compute_sdk.sdk.diagnostic:do_diagnostic"
+        ]
+    },
 )

@@ -20,13 +20,15 @@ def test_excludes_missing_commands(mocker, missing_command):
         f"{_MOCK_BASE}_run_command", lambda s: None if missing_command in s else s
     )
 
-    report = run_hardware_report()
+    env = "test env"
+    report = run_hardware_report(env)
 
     for command in _NON_PORTABLE_COMMANDS:
         if command == missing_command:
             assert command not in report
         else:
             assert command in report
+        assert f"== {env} ==" in report
 
 
 @pytest.mark.parametrize("missing_command", _NON_PORTABLE_COMMANDS)

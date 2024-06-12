@@ -8,13 +8,8 @@ import shutil
 import subprocess
 import sys
 
+from globus_compute_sdk.sdk.utils import display_name
 
-def display_name(name: str):
-    def decorator(func):
-        func.display_name = name
-        return func
-
-    return decorator
 
 
 @display_name("psutil.virtual_memory()")
@@ -25,9 +20,25 @@ def mem_info() -> str:
     return "\n".join(f"{k}: {v}" for k, v in svmem._asdict().items())
 
 
-@display_name("sys.version")
+@display_name("Python version")
 def python_version() -> str:
     return str(sys.version)
+
+
+@display_name("Python interpreter location")
+def python_location() -> str:
+    return str(sys.executable)
+
+
+def cpu_info() -> str | None:
+    if sys.platform == "linux":
+        return "lscpu"
+    elif sys.platform == "darwin":
+        return "sysctl -a | grep machdep.cpu"
+    elif sys.platform == "win32":
+        return "wmic CPU get NAME"
+    else:
+        return None
 
 
 def _run_command(cmd: str) -> str | None:
@@ -61,20 +72,42 @@ def _run_command(cmd: str) -> str | None:
         )
 
 
-def run_hardware_report() -> str:
-    commands = [
+def hardware_commands_list() -> list:
+    """
+    Commands that can also be useful in globus-compute-diagnostic
+    """
+    return [
         platform.processor,
         os.cpu_count,
-        "lscpu",
+        cpu_info(),
         "lshw -C display",
         "nvidia-smi",
-        mem_info,
-        "df",
+        # mem_info,
+        # "df",
         platform.node,
         platform.platform,
-        python_version,
-        "globus-compute-endpoint version",
     ]
+
+
+def run_hardware_report(env: str) -> str:
+    """
+    :param env:    # The environment this is to be run on, will
+                     be highlighted in the output headers
+                     for example == Compute Endpoint Worker == ... ==
+    :returns:      A line break separated output of all the
+                     individual reports
+    """
+    commands = hardware_commands_list()
+
+    # Separate out some commands that are duplicated in general
+    # SDK diagnostics
+    commands.extend(
+        [
+            python_version,
+            python_location,
+            "globus-compute-endpoint version",
+        ]
+    )
 
     outputs = []
     for cmd in commands:
@@ -89,6 +122,6 @@ def run_hardware_report() -> str:
             output = _run_command(cmd)
 
         if output:
-            outputs.append(f"== {display_name} ==\n{output}")
+            outputs.append(f"== {env} == {display_name} ==\n{output}")
 
     return "\n\n".join(outputs)

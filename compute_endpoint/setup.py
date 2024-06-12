@@ -94,6 +94,8 @@ setup(
             "=globus_compute_endpoint.engines.high_throughput.manager:cli_run",
             "globus-compute-worker"
             "=globus_compute_endpoint.engines.high_throughput.worker:cli_run",
+            # "globus-compute-diagnostic"
+            # "=globus_compute_sdk.sdk.diagnostic:run_diagnostic",
         ]
     },
     include_package_data=True,

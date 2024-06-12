@@ -95,3 +95,14 @@ def get_env_var_with_deprecation(
         )
 
     return os.getenv(current_name, os.getenv(old_name, default))
+
+
+def display_name(name: str):
+    """
+    Used for descriptions of diagnostic commands
+    """
+    def decorator(func):
+        func.display_name = name
+        return func
+
+    return decorator
