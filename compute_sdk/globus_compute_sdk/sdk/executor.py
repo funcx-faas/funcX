@@ -49,18 +49,23 @@ if t.TYPE_CHECKING:
     from pika.spec import Basic, BasicProperties
 
 
-_REGISTERED_FXEXECUTORS: dict[int, t.Any] = {}
+_REGISTERED_EXECUTORS: dict[int, Executor] = {}
+_RESULT_WATCHERS: dict[uuid.UUID, _ResultWatcher] = {}
 
 
-def __executor_atexit():
+def __atexit():
     threading.main_thread().join()
-    to_shutdown = list(_REGISTERED_FXEXECUTORS.values())
-    while to_shutdown:
-        gce = to_shutdown.pop()
+
+    while _REGISTERED_EXECUTORS:
+        _, gce = _REGISTERED_EXECUTORS.popitem()
         gce.shutdown()
 
+    while _RESULT_WATCHERS:
+        _, rw = _RESULT_WATCHERS.popitem()
+        rw.shutdown()
 
-threading.Thread(target=__executor_atexit).start()
+
+threading.Thread(target=__atexit).start()
 
 
 class _TaskSubmissionInfo:
@@ -117,6 +122,8 @@ class Executor(concurrent.futures.Executor):
     .. |Executor| replace:: ``Executor``
     .. _Executor: https://docs.python.org/3/library/concurrent.futures.html#executor-objects
     """  # noqa
+
+    _default_task_group_id: uuid.UUID | None = None
 
     def __init__(
         self,
@@ -183,8 +190,10 @@ class Executor(concurrent.futures.Executor):
         # mypy ... sometimes you just ain't too bright
         self.container_id = container_id  # type: ignore[assignment]
 
-        self._task_group_id: uuid.UUID | None = None  # help mypy out
-        self.task_group_id = task_group_id
+        self._task_group_id: uuid.UUID | None
+        self.task_group_id = (
+            task_group_id if task_group_id else Executor._default_task_group_id
+        )
 
         self._amqp_port: int | None = None
         self.amqp_port = amqp_port
@@ -209,14 +218,13 @@ class Executor(concurrent.futures.Executor):
         self._stopped = False
         self._stopped_in_error = False
         self._shutdown_lock = threading.RLock()
-        self._result_watcher: _ResultWatcher | None = None
 
         log.debug("%r: initiated on thread: %s", self, threading.get_ident())
         self._task_submitter = threading.Thread(
             target=self._task_submitter_impl, name="TaskSubmitter", daemon=True
         )
         self._task_submitter.start()
-        _REGISTERED_FXEXECUTORS[id(self)] = self
+        _REGISTERED_EXECUTORS[id(self)] = self
 
     def __repr__(self) -> str:
         name = self.__class__.__name__
@@ -297,7 +305,8 @@ class Executor(concurrent.futures.Executor):
         of tasks.  See `reload_tasks()`_ for more information.
 
         If not set manually, this will be set automatically on `submit()`_, to
-        a Task Group ID supplied by the services.
+        a Task Group ID supplied by the services. Subsequent `Executor` objects
+        will reuse the same task group ID by default.
 
         [default: ``None``]
         """
@@ -305,7 +314,10 @@ class Executor(concurrent.futures.Executor):
 
     @task_group_id.setter
     def task_group_id(self, task_group_id: UUID_LIKE_T | None):
-        self._task_group_id = as_optional_uuid(task_group_id)
+        tg_id = as_optional_uuid(task_group_id)
+        self._task_group_id = tg_id
+        if tg_id:
+            Executor._default_task_group_id = tg_id
 
     @property
     def resource_specification(self) -> dict[str, t.Any] | None:
@@ -674,15 +686,10 @@ class Executor(concurrent.futures.Executor):
         if self.task_group_id is None:
             raise ValueError("must specify a task_group_id in order to reload tasks")
 
-        # step 1: cleanup!
-        if self._result_watcher:
-            self._result_watcher.shutdown(wait=False, cancel_futures=True)
-            self._result_watcher = None
-
         task_group_id = self.task_group_id  # snapshot
         assert task_group_id is not None  # mypy: we _just_ proved this
 
-        # step 2: from server, acquire list of related task ids and make futures
+        # step 1: from server, acquire list of related task ids and make futures
         r = self.client.web_client.get_taskgroup_tasks(task_group_id)
         if r["taskgroup_id"] != str(task_group_id):
             msg = (
@@ -692,9 +699,12 @@ class Executor(concurrent.futures.Executor):
             )
             raise ValueError(msg)
 
-        # step 3: create the associated set of futures
+        # step 2: create the associated set of futures
         task_ids: list[str] = [task["id"] for task in r.get("tasks", [])]
         futures: list[ComputeFuture] = []
+
+        rw = _RESULT_WATCHERS.get(self.task_group_id)
+        open_futures = rw.get_open_futures() if rw else {}
 
         if task_ids:
             # Complete the futures that already have results.
@@ -718,6 +728,8 @@ class Executor(concurrent.futures.Executor):
 
                 res = self.client.web_client.get_batch_status(id_chunk)
                 for task_id, task in res.data.get("results", {}).items():
+                    if task_id in open_futures:
+                        continue
                     fut = ComputeFuture(task_id)
                     futures.append(fut)
                     completed_t = task.get("completion_t")
@@ -740,13 +752,13 @@ class Executor(concurrent.futures.Executor):
                             fut.set_exception(funcx_err)
 
             if pending:
-                self._result_watcher = _ResultWatcher(self, port=self.amqp_port)
-                self._result_watcher.watch_for_task_results(pending)
-                self._result_watcher.start()
+                if rw is None:
+                    rw = self._get_result_watcher()
+                rw.watch_for_task_results(self, pending)
         else:
             log.warning(f"Received no tasks for Task Group ID: {task_group_id}")
 
-        # step 5: the goods for the consumer
+        # step 3: the goods for the consumer
         return futures
 
     def shutdown(self, wait=True, *, cancel_futures=False):
@@ -766,18 +778,26 @@ class Executor(concurrent.futures.Executor):
                     self,
                     self._task_submitter.name,
                 )
-                try:
-                    # first, drain the queue
-                    while True:
-                        self._tasks_to_send.get(block=False)
-                        self._tasks_to_send.task_done()
-                except queue.Empty:
-                    pass
+
+                if cancel_futures:
+                    try:
+                        while True:
+                            fut, _ = self._tasks_to_send.get(block=False)
+                            fut.cancel()
+                            fut.set_running_or_notify_cancel()
+                            self._tasks_to_send.task_done()
+                    except queue.Empty:
+                        pass
+                else:
+                    while not self._tasks_to_send.empty():
+                        time.sleep(0.1)
                 self._tasks_to_send.put((None, None))  # poison pill for submitter
 
-            if self._result_watcher:
-                self._result_watcher.shutdown(wait=wait, cancel_futures=cancel_futures)
-                self._result_watcher = None
+                if wait:
+                    rw = _RESULT_WATCHERS.get(self.task_group_id)
+                    if rw:
+                        futures = rw.get_open_futures(self)
+                        concurrent.futures.wait(futures.values())
 
         if thread_id != self._task_submitter.ident and self._stopped_in_error:
             # In an unhappy path scenario, there's the potential for multiple
@@ -785,8 +805,16 @@ class Executor(concurrent.futures.Executor):
             # interwoven in the logs.  Attempt to make debugging easier for
             # that scenario by adding a slight delay on the *main* thread.
             time.sleep(0.1)
-        _REGISTERED_FXEXECUTORS.pop(id(self), None)
+
+        _REGISTERED_EXECUTORS.pop(id(self), None)
         log.debug("%r: shutdown finished (thread: %s)", self, thread_id)
+
+    def _get_result_watcher(self) -> _ResultWatcher:
+        rw = _RESULT_WATCHERS.get(self.task_group_id)
+        if rw is None or not rw.is_alive():
+            rw = _ResultWatcher(self.task_group_id, self.client, port=self.amqp_port)
+            rw.start()
+        return rw
 
     def get_worker_hardware_details(self) -> str:
         """
@@ -893,33 +921,19 @@ class Executor(concurrent.futures.Executor):
                         continue
 
                     with self._shutdown_lock:
-                        if self._stopped:
-                            continue
-
-                        if not (
-                            self._result_watcher and self._result_watcher.is_alive()
-                        ):
-                            # Don't initialize the result watcher unless at least
-                            # one batch has been sent
-                            self._result_watcher = _ResultWatcher(
-                                self, port=self.amqp_port
-                            )
-                            self._result_watcher.start()
+                        rw = self._get_result_watcher()
                         try:
-                            self._result_watcher.watch_for_task_results(to_watch)
-                        except self._result_watcher.__class__.ShuttingDownError:
+                            rw.watch_for_task_results(self, to_watch)
+                        except rw.__class__.ShuttingDownError:
                             log.debug(
                                 "%r (tid:%s): Waiting for previous ResultWatcher"
                                 " to shutdown",
                                 self,
                                 _tid,
                             )
-                            self._result_watcher.join()
-                            self._result_watcher = _ResultWatcher(
-                                self, port=self.amqp_port
-                            )
-                            self._result_watcher.start()
-                            self._result_watcher.watch_for_task_results(to_watch)
+                            rw.join()
+                            rw = self._get_result_watcher()
+                            rw.watch_for_task_results(self, to_watch)
 
                 # important to clear futures; else a legitimately early-shutdown
                 # request (e.g., __exit__()) can cancel these (finally block,
@@ -1091,9 +1105,11 @@ class _ResultWatcher(threading.Thread):
     using the Pika library that matches futures from the Executor against
     results received from the Globus Compute hosted services.
 
+    Each _ResultWatcher subscribes to a single task group queue.
+
     Expected usage::
 
-        rw = _ResultWatcher(self)  # assert isinstance(self, Executor)
+        rw = _ResultWatcher(self.task_group_id, self.client)
         rw.start()
 
         # rw is its own thread; it will use the Client attached to the
@@ -1106,7 +1122,8 @@ class _ResultWatcher(threading.Thread):
     will opportunistically shutdown; the caller must handle this scenario
     if new futures arrive, and create a new _ResultWatcher instance.
 
-    :param funcx_executor: An Executor instance
+    :task_group_id: The task group that the _ResultWatcher will subscribe to.
+    :param client: A Client instance.
     :param poll_period_s: [default: 0.5] how frequently to check for and
         handle events.  For example, if the thread should stop due to user
         request or if there are results to match.
@@ -1124,7 +1141,8 @@ class _ResultWatcher(threading.Thread):
 
     def __init__(
         self,
-        funcx_executor: Executor,
+        task_group_id: uuid.UUID,
+        client: Client,
         poll_period_s=0.5,
         connect_attempt_limit=5,
         channel_close_window_s=10,
@@ -1132,7 +1150,9 @@ class _ResultWatcher(threading.Thread):
         port: int | None = None,
     ):
         super().__init__()
-        self.funcx_executor = funcx_executor
+        self.task_group_id = task_group_id
+        self.client = client
+
         self._to_ack: list[int] = []  # outstanding amqp messages not-yet-acked
         self._time_to_check_results = threading.Event()
         self._new_futures_lock = threading.Lock()
@@ -1176,11 +1196,14 @@ class _ResultWatcher(threading.Thread):
 
         self.port = port
 
+        _RESULT_WATCHERS[self.task_group_id] = self
+
     def __repr__(self):
-        return "{}<{}; pid={}; fut={:,d}; res={:,d}; qp={}>".format(
+        return "{}<{}; pid={}; tg={}; fut={:,d}; res={:,d}; qp={}>".format(
             self.__class__.__name__,
             "✓" if self._consumer_tag else "✗",
             os.getpid(),
+            self.task_group_id,
             len(self._open_futures),
             len(self._received_results),
             self._queue_prefix if self._queue_prefix else "-",
@@ -1271,7 +1294,11 @@ class _ResultWatcher(threading.Thread):
             if wait:
                 join_thread.join()
 
-    def watch_for_task_results(self, futures: list[ComputeFuture]) -> int:
+        _RESULT_WATCHERS.pop(self.task_group_id, None)
+
+    def watch_for_task_results(
+        self, executor: Executor, futures: list[ComputeFuture]
+    ) -> int:
         """
         Add list of ComputeFutures to internal watch list.
 
@@ -1295,13 +1322,11 @@ class _ResultWatcher(threading.Thread):
                 msg = "Unable to watch futures: %s is shutting down."
                 raise self.__class__.ShuttingDownError(msg % self.__class__.__name__)
 
-            to_watch = {
-                f.task_id: f
-                for f in futures
-                if f.task_id
-                if not f.done()
-                if f.task_id not in self._open_futures
-            }
+            to_watch = {}
+            for f in futures:
+                if f.task_id and not f.done() and f.task_id not in self._open_futures:
+                    f._metadata["executor_id"] = id(executor)
+                    to_watch[f.task_id] = f
             self._open_futures.update(to_watch)
 
             if self._open_futures:  # futures as an empty list is acceptable
@@ -1312,6 +1337,22 @@ class _ResultWatcher(threading.Thread):
                     self._time_to_check_results.set()
         return len(to_watch)
 
+    def get_open_futures(
+        self, executor: Executor | None = None
+    ) -> dict[str, ComputeFuture]:
+        """Return ComputeFuture objects that are waiting for results.
+
+        Specify the ``executor`` argument to only return futures that came from
+        a particular ``Executor``.
+        """
+        e_id = id(executor) if executor else None
+        futs = {}
+        with self._new_futures_lock:
+            for task_id, fut in self._open_futures.items():
+                if e_id is None or e_id == fut._metadata["executor_id"]:
+                    futs[task_id] = fut
+        return futs
+
     def _match_results_to_futures(self):
         """
         Match the internal ``_received_results`` and ``_open_futures`` on their
@@ -1321,7 +1362,7 @@ class _ResultWatcher(threading.Thread):
         This method will set the _open_futures_empty event if there are no open
         futures *at the time of processing*.
         """
-        deserialize = self.funcx_executor.client.fx_serializer.deserialize
+        deserialize = self.client.fx_serializer.deserialize
         with self._new_futures_lock:
             futures_to_complete = [
                 self._open_futures.pop(tid)
@@ -1333,7 +1374,7 @@ class _ResultWatcher(threading.Thread):
         for fut in futures_to_complete:
             props, res = self._received_results.pop(fut.task_id)
 
-            self.funcx_executor.client._log_version_mismatch(res.details)
+            self.client._log_version_mismatch(res.details)
             if res.is_error:
                 fut.set_exception(
                     TaskExecutionFailed(res.data, str(props.timestamp or 0))
@@ -1449,7 +1490,7 @@ class _ResultWatcher(threading.Thread):
 
     def _connect(self) -> pika.SelectConnection:
         with self._new_futures_lock:
-            res = self.funcx_executor.client.get_result_amqp_url()
+            res = self.client.get_result_amqp_url()
             self._queue_prefix = res["queue_prefix"]
             connection_url = res["connection_url"]
 
@@ -1535,7 +1576,7 @@ class _ResultWatcher(threading.Thread):
 
     def _start_consuming(self):
         self._consumer_tag = self._channel.basic_consume(
-            queue=f"{self._queue_prefix}{self.funcx_executor.task_group_id}",
+            queue=f"{self._queue_prefix}{self.task_group_id}",
             on_message_callback=self._on_message,
         )
 

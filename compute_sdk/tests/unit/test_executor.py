@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import platform
 import random
 import threading
@@ -14,7 +15,11 @@ from globus_compute_common.messagepack.message_types import Result, ResultErrorD
 from globus_compute_sdk import Client, Executor, __version__
 from globus_compute_sdk.errors import TaskExecutionFailed
 from globus_compute_sdk.sdk.asynchronous.compute_future import ComputeFuture
-from globus_compute_sdk.sdk.executor import _ResultWatcher, _TaskSubmissionInfo
+from globus_compute_sdk.sdk.executor import (
+    _RESULT_WATCHERS,
+    _ResultWatcher,
+    _TaskSubmissionInfo,
+)
 from globus_compute_sdk.sdk.utils import chunk_by
 from globus_compute_sdk.sdk.utils.uuid_like import as_optional_uuid, as_uuid
 from globus_compute_sdk.sdk.web_client import WebClient
@@ -48,6 +53,7 @@ class MockedExecutor(Executor):
             ),
         )
         super().__init__(*args, **kwargs)
+        Executor._default_task_group_id = None  # Reset for each test
         self._test_task_submitter_exception: t.Type[Exception] | None = None
         self._test_task_submitter_done = False
 
@@ -63,7 +69,7 @@ class MockedExecutor(Executor):
 class MockedResultWatcher(_ResultWatcher):
     def __init__(self, *args, **kwargs):
         if not args:
-            args = (MockedExecutor(),)
+            args = (uuid.uuid4(), MockedExecutor().client)
         super().__init__(*args, **kwargs)
         self._time_to_stop_mock = threading.Event()
 
@@ -87,31 +93,31 @@ class MockedResultWatcher(_ResultWatcher):
 
 
 @pytest.fixture
-def gc_executor(mocker):
+def mock_result_watcher(mocker: MockerFixture):
+    rw = mocker.patch(f"{_MOCK_BASE}_ResultWatcher", autospec=True)
+    rw.side_effect = lambda *args, **kwargs: MockedResultWatcher(*args, **kwargs)
+    return rw
+
+
+@pytest.fixture
+def gc_executor(mock_result_watcher):
     gce = MockedExecutor()
-    watcher = mocker.patch(f"{_MOCK_BASE}_ResultWatcher", autospec=True)
-
-    def create_mock_watcher(*args, **kwargs):
-        return MockedResultWatcher(gce)
-
-    watcher.side_effect = create_mock_watcher
 
     yield gce.client, gce
 
     gce.shutdown(wait=False, cancel_futures=True)
     try_for_timeout(_is_stopped(gce._task_submitter))
-    try_for_timeout(_is_stopped(gce._result_watcher))
 
     if not _is_stopped(gce._task_submitter)():
         trepr = repr(gce._task_submitter)
         raise RuntimeError(
             "Executor still running: _task_submitter thread alive: %s" % trepr
         )
-    if not _is_stopped(gce._result_watcher)():
-        trepr = repr(gce._result_watcher)
-        raise RuntimeError(
-            "Executor still running: _result_watcher thread alive: %r" % trepr
-        )
+
+    while _RESULT_WATCHERS:
+        _, rw = _RESULT_WATCHERS.popitem()
+        rw.shutdown(wait=False, cancel_futures=True)
+        try_for_timeout(_is_stopped(rw))
 
 
 @pytest.fixture
@@ -213,13 +219,42 @@ def test_creates_default_client_if_none_provided(mocker):
     mock_gcc_klass.assert_called()
 
 
+def test_executor_uses_previous_task_group():
+    gcc = mock.Mock(spec=Client)
+    tg_id = uuid.uuid4()
+
+    with Executor(task_group_id=tg_id, client=gcc) as gce:
+        assert gce.task_group_id == tg_id
+
+    with Executor(client=gcc) as gce:
+        assert gce.task_group_id == tg_id
+        gce.task_group_id = None
+        assert gce.task_group_id is None
+
+    with Executor(client=gcc) as gce:
+        assert gce.task_group_id == tg_id
+
+
+def test_multiple_executors_multiple_task_groups():
+    gcc = mock.Mock(spec=Client)
+
+    tg_id_1 = uuid.uuid4()
+    tg_id_2 = uuid.uuid4()
+    gce_1 = Executor(task_group_id=tg_id_1, client=gcc)
+    gce_2 = Executor(task_group_id=tg_id_2, client=gcc)
+    gce_3 = Executor(client=gcc)
+
+    assert gce_1.task_group_id == tg_id_1
+    assert gce_2.task_group_id == tg_id_2
+    assert gce_3.task_group_id == tg_id_2
+
+
 def test_executor_shutdown(gc_executor):
     _, gce = gc_executor
     gce.shutdown()
 
     assert gce._stopped
     assert _is_stopped(gce._task_submitter)
-    assert _is_stopped(gce._result_watcher)
 
 
 def test_executor_context_manager(gc_executor):
@@ -229,43 +264,98 @@ def test_executor_context_manager(gc_executor):
 
     assert gce._stopped
     assert _is_stopped(gce._task_submitter)
-    assert _is_stopped(gce._result_watcher)
 
 
-def test_executor_shutdown_idempotent(gc_executor):
+def test_executor_shutdown_idempotent(gc_executor: t.Tuple[Client, Executor], mock_log):
     _, gce = gc_executor
     assert not gce._stopped, "Verify test setup"
     assert gce._task_submitter.is_alive(), "Verify test setup"
-    assert gce._result_watcher is None, "Verify test setup"
 
-    mock_rw = mock.Mock(spec=_ResultWatcher)
-    mock_rw.shutdown.side_effect = (None, AssertionError)
-    gce._result_watcher = mock_rw
     gce.shutdown()
 
-    assert mock_rw.shutdown.call_count == 1
+    assert "initiating shutdown" in mock_log.debug.call_args_list[0][0][0]
+    assert mock_log.debug.call_count == 3
+
     for _ in range(10):
-        gce._result_watcher = mock_rw
         gce.shutdown()
-    assert mock_rw.shutdown.call_count == 1
-    gce._result_watcher = None
+
+    assert mock_log.debug.call_count == 3
 
 
-def test_executor_shutdown_idempotent_with(gc_executor):
+def test_executor_shutdown_idempotent_with(
+    gc_executor: t.Tuple[Client, Executor], mock_log
+):
     _, gce = gc_executor
-    assertion = AssertionError("Expected that context manager exit is noop")
-    mock_rw = mock.Mock(spec=_ResultWatcher)
-    mock_rw.shutdown.side_effect = (None, assertion)
-    gce._result_watcher = mock_rw
     with gce:
         gce.shutdown()
-        gce._result_watcher = mock_rw
-    gce._result_watcher = None
+        assert "initiating shutdown" in mock_log.debug.call_args_list[0][0][0]
+        assert mock_log.debug.call_count == 3
+    assert mock_log.debug.call_count == 3
+
+
+@pytest.mark.parametrize("wait", (True, False))
+def test_executor_shutdown_wait(
+    wait: bool,
+    mocker: MockerFixture,
+    gc_executor: t.Tuple[Client, Executor],
+    mock_result_watcher: mock.Mock,
+):
+    _, gce = gc_executor
+    gce.task_group_id = uuid.uuid4()
+
+    task_ids = [str(uuid.uuid4()) for _ in range(random.randint(1, 2))]
+    open_futs = {task_id: ComputeFuture(task_id=task_id) for task_id in task_ids}
+    mock_result_watcher.get_open_futures.return_value = open_futs
+    mocker.patch(
+        f"{_MOCK_BASE}_RESULT_WATCHERS", new={gce.task_group_id: mock_result_watcher}
+    )
+    mock_wait = mocker.patch.object(concurrent.futures, "wait")
+
+    gce.shutdown(wait=wait)
+
+    if wait:
+        assert mock_wait.called
+        assert list(mock_wait.call_args[0][0]) == list(open_futs.values())
+    else:
+        assert not mock_wait.called
+
+
+@pytest.mark.parametrize("cancel_futures", (True, False))
+def test_executor_shutdown_cancel_futures(
+    cancel_futures: bool, gc_executor: t.Tuple[Client, Executor]
+):
+    gcc, gce = gc_executor
+    gce.endpoint_id = uuid.uuid4()
+    gce.task_group_id = uuid.uuid4()
+
+    gcc.register_function.return_value = str(uuid.uuid4())
+
+    gce._task_submitter = mock.Mock(spec=threading.Thread)
+    gce._task_submitter.join.side_effect = lambda: None
+    gce._task_submitter.is_alive.return_value = True
+
+    futures: list[ComputeFuture] = []
+    num_submits = random.randint(1, 20)
+    for _ in range(num_submits):
+        future = gce.submit(noop)
+        futures.append(future)
+
+    assert gce._tasks_to_send.qsize() == num_submits, "Verify test setup"
+
+    gce.shutdown(cancel_futures=cancel_futures)
+
+    assert gce._tasks_to_send.qsize() == 1  # Only poison pill remains
+    if cancel_futures:
+        assert all(fut.cancelled() for fut in futures)
+    else:
+        assert all(not fut.cancelled() for fut in futures)
+
+    gce._task_submitter.is_alive.return_value = False  # Allow test cleanup
 
 
 @pytest.mark.parametrize("num_submits", (random.randint(1, 1000),))
-def test_executor_stuck_submitter_doesnt_hold_shutdown(
-    gc_executor, num_submits, mock_log
+def test_executor_stuck_submitter_doesnt_hold_shutdown_if_cancel_futures(
+    gc_executor: t.Tuple[Client, Executor], num_submits: int
 ):
     def some_func(*a, **k):
         return None
@@ -286,7 +376,7 @@ def test_executor_stuck_submitter_doesnt_hold_shutdown(
         gce.submit(some_func)
     assert gce._tasks_to_send.qsize() == num_submits
 
-    gce.shutdown()
+    gce.shutdown(cancel_futures=True)
 
     assert not gce._task_submitter.join.called, "poison pill sent; thread NOT joined"
     assert gce._tasks_to_send.qsize() == 1
@@ -605,7 +695,7 @@ def test_reload_tasks_some_completed(gc_executor, mock_log, num_tasks):
     assert sum(1 for fut in client_futures if fut.done()) == num_completed
 
 
-def test_reload_tasks_all_completed(gc_executor):
+def test_reload_tasks_all_completed(gc_executor: t.Tuple[Client, Executor]):
     gcc, gce = gc_executor
 
     serialize = ComputeSerializer().serialize
@@ -635,7 +725,9 @@ def test_reload_tasks_all_completed(gc_executor):
 
     assert len(client_futures) == num_tasks
     assert sum(1 for fut in client_futures if fut.done()) == num_tasks
-    assert gce._result_watcher is None, "Should NOT start watcher: all tasks done!"
+    assert (
+        _RESULT_WATCHERS.get(gce.task_group_id) is None
+    ), "Should NOT start watcher: all tasks done!"
 
 
 @pytest.mark.parametrize(
@@ -701,7 +793,7 @@ def test_reload_chunks_tasks_requested(mock_log, gc_executor, num_tasks):
         assert all(a[3] == chunk_num for chunk_num, a in enumerate(dbgs, start=1))
 
 
-def test_reload_starts_new_watcher(gc_executor):
+def test_reload_does_not_start_new_watcher(gc_executor: t.Tuple[Client, Executor]):
     gcc, gce = gc_executor
 
     num_tasks = 3
@@ -718,42 +810,55 @@ def test_reload_starts_new_watcher(gc_executor):
     gcc.web_client.get_batch_status.return_value = mock_batch_result
 
     client_futures = list(gce.reload_tasks())
-
     assert len(client_futures) == num_tasks
-    try_assert(lambda: gce._result_watcher.is_alive())
-    watcher_1 = gce._result_watcher
+
+    watcher_1 = _RESULT_WATCHERS.get(gce.task_group_id)
+    try_assert(lambda: watcher_1.is_alive())
 
     gce.reload_tasks()
-    try_assert(lambda: gce._result_watcher.is_alive())
-    watcher_2 = gce._result_watcher
 
-    assert watcher_1 is not watcher_2
+    watcher_2 = _RESULT_WATCHERS.get(gce.task_group_id)
+    try_assert(lambda: watcher_2.is_alive())
+
+    assert watcher_1 is watcher_2
 
 
-def test_reload_tasks_cancels_existing_futures(gc_executor, randomstring):
+def test_reload_tasks_ignores_existing_futures(
+    mocker: MockerFixture,
+    gc_executor: t.Tuple[Client, Executor],
+    mock_result_watcher: mock.Mock,
+):
     gcc, gce = gc_executor
-
     gce.task_group_id = uuid.uuid4()
 
-    def mock_data():
-        return {
+    def update_mock_data(task_ids: t.List[str]):
+        mock_data = {
             "taskgroup_id": str(gce.task_group_id),
-            "tasks": [{"id": uuid.uuid4()} for _ in range(random.randint(1, 20))],
+            "tasks": [{"id": task_id} for task_id in task_ids],
         }
+        mock_batch_status = {_t["id"]: {} for _t in mock_data["tasks"]}
+        gcc.web_client.get_taskgroup_tasks.return_value = mock_data
+        gcc.web_client.get_batch_status.return_value = mock.Mock(
+            data={"results": mock_batch_status}
+        )
 
-    md = mock_data()
-    bs = {_t["id"]: {} for _t in md["tasks"]}
-    gcc.web_client.get_taskgroup_tasks.return_value = md
-    gcc.web_client.get_batch_status.return_value = mock.Mock(data={"results": bs})
+    task_ids_1 = [str(uuid.uuid4()) for _ in range(random.randint(1, 20))]
+    update_mock_data(task_ids_1)
 
-    client_futures_1 = list(gce.reload_tasks())
-    assert any(not fut.done() for fut in client_futures_1), "Verify test setup"
+    futures_1 = gce.reload_tasks()
+    assert all(not fut.done() for fut in futures_1), "Verify test setup"
+    assert len(futures_1) == len(task_ids_1), "Verify test setup"
+    assert all(fut.task_id in task_ids_1 for fut in futures_1), "Verify test setup"
 
-    gcc.web_client.get_taskgroup_tasks.return_value = mock_data()
-    client_futures_2 = list(gce.reload_tasks())
+    mock_result_watcher.get_open_futures.return_value = futures_1
+    task_ids_2 = [str(uuid.uuid4()) for _ in range(random.randint(1, 20))]
+    update_mock_data(task_ids_2)
 
-    assert all(fut.cancelled() for fut in client_futures_1)
-    assert not any(fut.done() for fut in client_futures_2)
+    futures_2 = gce.reload_tasks()
+    assert all(not fut.cancelled() for fut in futures_1)
+    assert all(not fut.done() for fut in futures_2)
+    assert len(futures_2) == len(task_ids_2)
+    assert all(fut.task_id in task_ids_2 for fut in futures_2)
 
 
 def test_reload_client_taskgroup_tasks_fails_gracefully(gc_executor):
@@ -958,7 +1063,9 @@ def test_task_submit_handles_multiple_user_endpoint_configs(
         assert found_uep_config == expected
 
 
-def test_task_submitter_handles_stale_result_watcher_gracefully(gc_executor):
+def test_task_submitter_handles_stale_result_watcher_gracefully(
+    gc_executor: t.Tuple[Client, Executor]
+):
     gcc, gce = gc_executor
     gcc.register_function.return_value = uuid.uuid4()
     gce.endpoint_id = uuid.uuid4()
@@ -971,14 +1078,17 @@ def test_task_submitter_handles_stale_result_watcher_gracefully(gc_executor):
         "task_group_id": str(uuid.uuid4()),
     }
     gce.submit(noop)
-    try_assert(lambda: bool(gce._result_watcher), "Test prerequisite")
-    try_assert(lambda: bool(gce._result_watcher._open_futures), "Test prerequisite")
-    watcher_1 = gce._result_watcher
+
+    try_assert(lambda: bool(_RESULT_WATCHERS), "Test prerequisite")
+    watcher_1 = _RESULT_WATCHERS.get(gce.task_group_id)
+    try_assert(lambda: bool(watcher_1._open_futures), "Test prerequisite")
+
     watcher_1._closed = True  # simulate shutting down, but not yet stopped
     watcher_1._time_to_stop = True
 
-    gce.submit(noop)
-    try_assert(lambda: gce._result_watcher is not watcher_1, "Test prerequisite")
+    gce.submit(noop).done()
+
+    try_assert(lambda: watcher_1 is not _RESULT_WATCHERS.get(gce.task_group_id))
 
 
 def test_task_submitter_sets_future_task_ids(gc_executor):
@@ -1023,9 +1133,41 @@ def test_submit_tasks_stops_futures_on_bad_response(gc_executor, batch_response)
         assert fut.exception() is pyt_exc.value
 
 
+def test_one_resultwatcher_per_task_group(gc_executor: t.Tuple[Client, Executor]):
+    gcc, gce = gc_executor
+    gce.endpoint_id = uuid.uuid4()
+
+    def runit(tg_id: uuid.UUID, num_watchers: int):
+        fn_id = uuid.uuid4()
+        batch_run_data = {
+            "task_group_id": str(tg_id),
+            "tasks": {str(fn_id): [str(uuid.uuid4())]},
+        }
+        gcc.batch_run.return_value = batch_run_data
+        gcc.register_function.return_value = str(fn_id)
+
+        gce.task_group_id = tg_id
+        f = gce.submit(lambda: uuid.uuid4())
+
+        try_assert(lambda: len(_RESULT_WATCHERS) == num_watchers)
+        rw = _RESULT_WATCHERS.get(gce.task_group_id)
+        assert rw.task_group_id == gce.task_group_id
+        try_assert(lambda: f.task_id in rw._open_futures)
+        assert rw._open_futures.get(f.task_id) == f
+
+    assert len(_RESULT_WATCHERS) == 0, "Verify test setup"
+
+    tg_id_1 = uuid.uuid4()
+    tg_id_2 = uuid.uuid4()
+    runit(tg_id=tg_id_1, num_watchers=1)
+    runit(tg_id=tg_id_2, num_watchers=2)
+    runit(tg_id=tg_id_1, num_watchers=2)  # Reuse first task group ID
+    assert len(_RESULT_WATCHERS) == 2  # Final check
+
+
 def test_resultwatcher_stops_if_unable_to_connect(mocker):
     mock_time = mocker.patch(f"{_MOCK_BASE}time")
-    rw = _ResultWatcher(MockedExecutor())
+    rw = _ResultWatcher(uuid.uuid4(), mock.Mock(spec=Client))
     rw._connect = mock.Mock(return_value=mock.Mock(spec=pika.SelectConnection))
 
     rw.run()
@@ -1034,22 +1176,56 @@ def test_resultwatcher_stops_if_unable_to_connect(mocker):
 
 
 def test_resultwatcher_ignores_invalid_tasks():
-    rw = _ResultWatcher(MockedExecutor())
+    rw = _ResultWatcher(uuid.uuid4(), mock.Mock(spec=Client))
     rw._connect = mock.Mock(return_value=mock.Mock(spec=pika.SelectConnection))
 
     futs = [ComputeFuture() for i in range(random.randint(1, 10))]
     futs[0].task_id = uuid.uuid4()
-    num_added = rw.watch_for_task_results(futs)
+    num_added = rw.watch_for_task_results(MockedExecutor(), futs)
     assert 1 == num_added
+
+
+def test_resultwatcher_adds_executor_id_to_future():
+    rw = _ResultWatcher(uuid.uuid4(), mock.Mock(spec=Client))
+    fut = ComputeFuture(task_id=str(uuid.uuid4()))
+
+    gce = MockedExecutor()
+    rw.watch_for_task_results(gce, [fut])
+
+    assert fut._metadata["executor_id"] == id(gce)
+
+
+def test_resultwatcher_get_open_futures():
+    rw = _ResultWatcher(uuid.uuid4(), mock.Mock(spec=Client))
+
+    def mock_futures(gce: Executor):
+        gce_id = id(gce)
+        open_futs = {}
+        for _ in range(random.randint(1, 20)):
+            task_id = str(uuid.uuid4())
+            fut = ComputeFuture(task_id)
+            fut._metadata["executor_id"] = gce_id
+            open_futs[task_id] = fut
+        return open_futs
+
+    gce_1 = MockedExecutor()
+    gce_2 = MockedExecutor()
+    open_futs_1 = mock_futures(gce_1)
+    open_futs_2 = mock_futures(gce_2)
+    rw._open_futures = {**open_futs_1, **open_futs_2}
+
+    assert rw.get_open_futures(gce_1) == open_futs_1
+    assert rw.get_open_futures(gce_2) == open_futs_2
+    assert rw.get_open_futures() == rw._open_futures
 
 
 def test_resultwatcher_cancels_futures_on_unexpected_stop(mocker):
     mocker.patch(f"{_MOCK_BASE}time")
-    rw = _ResultWatcher(MockedExecutor())
+    rw = _ResultWatcher(uuid.uuid4(), mock.Mock(spec=Client))
     rw._connect = mock.Mock(return_value=mock.Mock(spec=pika.SelectConnection))
 
     fut = ComputeFuture(task_id=str(uuid.uuid4()))
-    rw.watch_for_task_results([fut])
+    rw.watch_for_task_results(MockedExecutor(), [fut])
     rw.run()
 
     assert "thread quit" in str(fut.exception())
@@ -1057,7 +1233,7 @@ def test_resultwatcher_cancels_futures_on_unexpected_stop(mocker):
 
 def test_resultwatcher_gracefully_handles_unexpected_exception(mocker, mock_log):
     mocker.patch(f"{_MOCK_BASE}time")
-    rw = _ResultWatcher(MockedExecutor())
+    rw = _ResultWatcher(uuid.uuid4(), mock.Mock(spec=Client))
     rw._connect = mock.Mock(return_value=mock.Mock(spec=pika.SelectConnection))
     rw._event_watcher = mock.Mock(side_effect=Exception)
 
@@ -1071,7 +1247,7 @@ def test_resultwatcher_gracefully_handles_unexpected_exception(mocker, mock_log)
 def test_resultwatcher_blocks_until_tasks_done():
     fut = ComputeFuture(task_id=str(uuid.uuid4()))
     mrw = MockedResultWatcher()
-    mrw.watch_for_task_results([fut])
+    mrw.watch_for_task_results(MockedExecutor(), [fut])
     mrw.start()
 
     res = Result(task_id=fut.task_id, data="abc123")
@@ -1087,7 +1263,7 @@ def test_resultwatcher_does_not_check_if_no_results():
     fut = ComputeFuture(task_id=str(uuid.uuid4()))
     mrw = MockedResultWatcher()
     mrw._match_results_to_futures = mock.Mock()
-    mrw.watch_for_task_results([fut])
+    mrw.watch_for_task_results(MockedExecutor(), [fut])
     mrw.start()
     mrw._event_watcher()
 
@@ -1102,7 +1278,7 @@ def test_resultwatcher_checks_match_if_results():
     mrw = MockedResultWatcher()
     mrw._received_results[fut.task_id] = (None, res)
 
-    mrw.watch_for_task_results([fut])
+    mrw.watch_for_task_results(MockedExecutor(), [fut])
     mrw.start()
     mrw._event_watcher()
 
@@ -1118,6 +1294,9 @@ def test_resultwatcher_repr():
     assert "<✓;" in repr(mrw)
     mrw._consumer_tag = None
     assert "<✗;" in repr(mrw)
+
+    mrw.task_group_id = uuid.uuid4()
+    assert f"tg={mrw.task_group_id}"
 
     for i in range(10):
         assert f"fut={i};" in repr(mrw)
@@ -1144,9 +1323,9 @@ def test_resultwatcher_match_sets_exception(randomstring):
     res = Result(task_id=fut.task_id, error_details=err_details, data=payload)
 
     mrw = MockedResultWatcher()
-    mrw.funcx_executor.client.fx_serializer.deserialize = fxs.deserialize
+    mrw.client.fx_serializer.deserialize = fxs.deserialize
     mrw._received_results[fut.task_id] = (mock.Mock(timestamp=5), res)
-    mrw.watch_for_task_results([fut])
+    mrw.watch_for_task_results(MockedExecutor(), [fut])
     mrw.start()
     mrw._event_watcher()
 
@@ -1162,9 +1341,9 @@ def test_resultwatcher_match_sets_result(randomstring):
     res = Result(task_id=fut.task_id, data=fxs.serialize(payload))
 
     mrw = MockedResultWatcher()
-    mrw.funcx_executor.client.fx_serializer.deserialize = fxs.deserialize
+    mrw.client.fx_serializer.deserialize = fxs.deserialize
     mrw._received_results[fut.task_id] = (None, res)
-    mrw.watch_for_task_results([fut])
+    mrw.watch_for_task_results(MockedExecutor(), [fut])
     mrw.start()
     mrw._event_watcher()
 
@@ -1179,9 +1358,9 @@ def test_resultwatcher_match_handles_deserialization_error():
     res = Result(task_id=fut.task_id, data=invalid_payload)
 
     mrw = MockedResultWatcher()
-    mrw.funcx_executor.client.fx_serializer.deserialize = fxs.deserialize
+    mrw.client.fx_serializer.deserialize = fxs.deserialize
     mrw._received_results[fut.task_id] = (None, res)
-    mrw.watch_for_task_results([fut])
+    mrw.watch_for_task_results(MockedExecutor(), [fut])
     mrw.start()
     mrw._event_watcher()
 
@@ -1198,14 +1377,14 @@ def test_resultwatcher_match_calls_log_version_mismatch(randomstring):
     res = Result(task_id=fut.task_id, data=fxs.serialize(payload))
 
     mrw = MockedResultWatcher()
-    mrw.funcx_executor.client.fx_serializer.deserialize = fxs.deserialize
+    mrw.client.fx_serializer.deserialize = fxs.deserialize
     mrw._received_results[fut.task_id] = (None, res)
-    mrw.watch_for_task_results([fut])
+    mrw.watch_for_task_results(MockedExecutor(), [fut])
     mrw.start()
     mrw._event_watcher()
 
     assert fut.result() == payload
-    assert mrw.funcx_executor.client._log_version_mismatch.called
+    assert mrw.client._log_version_mismatch.called
     mrw.shutdown()
 
 
@@ -1320,10 +1499,12 @@ def test_resultwatcher_amqp_acks_in_bulk():
     mrw.shutdown()
 
 
-def test_result_queue_watcher_custom_port(mocker, gc_executor):
+def test_result_queue_watcher_custom_port(
+    mocker, gc_executor: t.Tuple[Client, Executor]
+):
     gcc, gce = gc_executor
     custom_port_no = random.randint(1, 65536)
-    rw = _ResultWatcher(gce, port=custom_port_no)
+    rw = _ResultWatcher(gce.task_group_id, gcc, port=custom_port_no)
     gcc.get_result_amqp_url.return_value = {
         "queue_prefix": "",
         "connection_url": "amqp://some.address:1111",
