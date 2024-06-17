@@ -212,7 +212,7 @@ class GlobusComputeEngine(GlobusComputeEngineBase):
             )
 
         if (
-            self.executor.provider.channel
+            hasattr(self.executor.provider, "channel")
             and not self.executor.provider.channel.script_dir
         ):
             self.executor.provider.channel.script_dir = script_dir

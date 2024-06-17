@@ -22,7 +22,9 @@ from globus_compute_endpoint.engines import (
 )
 from globus_compute_endpoint.engines.base import GlobusComputeEngineBase
 from globus_compute_sdk.serialize import ComputeSerializer
+from parsl import HighThroughputExecutor
 from parsl.executors.high_throughput.interchange import ManagerLost
+from parsl.providers import KubernetesProvider
 from pytest_mock import MockFixture
 from tests.utils import double, ez_pack_function, kill_manager
 
@@ -207,6 +209,20 @@ def test_gcengine_start_pass_through_to_executor(
 
     assert mock_executor.run_dir == run_dir
     assert mock_executor.provider.script_dir == scripts_dir
+
+
+def test_gcengine_start_provider_without_channel(tmp_path: pathlib.Path):
+    mock_executor = mock.Mock(spec=HighThroughputExecutor)
+    mock_executor.status_polling_interval = 5
+    mock_executor.provider = mock.Mock(spec=KubernetesProvider)
+
+    assert not hasattr(mock_executor.provider, "channel"), "Verify test setup"
+
+    engine = GlobusComputeEngine(executor=mock_executor)
+    engine.start(
+        endpoint_id=uuid.uuid4(), run_dir=tmp_path, results_passthrough=Queue()
+    )
+    engine.shutdown()
 
 
 @pytest.mark.parametrize("encrypted", (True, False))
