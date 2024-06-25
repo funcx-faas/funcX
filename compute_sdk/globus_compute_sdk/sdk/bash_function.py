@@ -1,11 +1,15 @@
 import tempfile
-from typing import Any, Dict
+import typing as t
 
 
 class FunctionTimeout(Exception):
 
     def __init__(
-        self, cmd: str, walltime: float, stdout: str | None, stderr: str | None
+        self,
+        cmd: str,
+        walltime: float,
+        stdout: t.Union[str, None],
+        stderr: t.Union[str, None],
     ):
         self.cmd = cmd
         self.walltime = walltime
@@ -26,7 +30,7 @@ class BashResult:
         stdout: str,
         stderr: str,
         returncode: int,
-        exception_name: str | None = None,
+        exception_name: t.Optional[str] = None,
     ):
         """
 
@@ -61,13 +65,13 @@ class BashFunction:
     def __init__(
         self,
         cmd: str,
-        stdout: str | None = None,
-        stderr: str | None = None,
-        walltime: float | None = None,
+        stdout: t.Optional[str] = None,
+        stderr: t.Optional[str] = None,
+        walltime: t.Optional[float] = None,
         # This could be a os.Pathlike, but check windows->unix transition
-        rundir: str | None = None,
+        rundir: t.Optional[str] = None,
         sandbox: bool = True,
-        resource_specification: Dict[str, Any] | None = None,
+        resource_specification: t.Optional[t.Dict[str, t.Any]] = None,
         snippet_lines=1000,
     ):
         """Initialize a BashFunction
@@ -135,7 +139,7 @@ class BashFunction:
         last_n_lines = file_obj.readlines()[-self.snippet_lines :]
         return "".join(last_n_lines)
 
-    def get_and_close_streams(self, stdout, stderr) -> tuple[str, str]:
+    def get_and_close_streams(self, stdout, stderr) -> t.Tuple[str, str]:
         stdout_snippet = self.get_snippet(stdout)
         stderr_snippet = self.get_snippet(stderr)
         stdout.close()
@@ -145,9 +149,9 @@ class BashFunction:
     def execute_cmd_line(
         self,
         cmd: str,
-        stdout: str | None = None,
-        stderr: str | None = None,
-        rundir: str | None = None,
+        stdout: t.Optional[str] = None,
+        stderr: t.Optional[str] = None,
+        rundir: t.Optional[str] = None,
     ) -> BashResult:
         import os
         import subprocess
@@ -213,9 +217,9 @@ class BashFunction:
 
     def __call__(
         self,
-        stdout: str | None = None,
-        stderr: str | None = None,
-        rundir: str | None = None,
+        stdout: t.Optional[str] = None,
+        stderr: t.Optional[str] = None,
+        rundir: t.Optional[str] = None,
         **kwargs,
     ) -> BashResult:
         """This method is passed from an executor to an endpoint to execute the

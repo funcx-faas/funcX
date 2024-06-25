@@ -13,9 +13,9 @@ def run_in_tmp_dir(tmp_path):
 def test_mpi_function(run_in_tmp_dir):
 
     mpi_func = MPIFunction("hostname", resource_specification={"num_ranks": 2})
-    stdout, stderr = mpi_func(resource_specification={"num_ranks": 4})
+    bash_result = mpi_func(resource_specification={"num_ranks": 4})
 
-    assert "$PARSL_MPI_PREFIX hostname" in stderr
+    assert "$PARSL_MPI_PREFIX hostname" in bash_result.stderr
 
 
 def test_missing_resource_spec(run_in_tmp_dir):

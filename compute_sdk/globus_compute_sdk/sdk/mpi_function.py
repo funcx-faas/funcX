@@ -7,10 +7,10 @@ class MPIFunction(BashFunction):
 
     def __call__(
         self,
-        stdout: str | None = None,
-        stderr: str | None = None,
-        rundir: str | None = None,
-        resource_specification: dict[str, t.Any] = None,
+        stdout: t.Optional[str] = None,
+        stderr: t.Optional[str] = None,
+        rundir: t.Optional[str] = None,
+        resource_specification: t.Optional[t.Dict[str, t.Any]] = None,
         **kwargs,
     ):
         assert (
