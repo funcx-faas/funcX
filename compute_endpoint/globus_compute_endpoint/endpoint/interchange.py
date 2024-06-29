@@ -337,7 +337,9 @@ class EndpointInterchange:
         log.debug("_main_loop begins")
 
         task_q_subscriber = TaskQueueSubscriber(
-            queue_info=self.task_q_info, pending_task_queue=self.pending_task_queue
+            queue_info=self.task_q_info,
+            pending_task_queue=self.pending_task_queue,
+            thread_name="TQS",
         )
         task_q_subscriber.start()
 
