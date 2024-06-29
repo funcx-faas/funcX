@@ -14,11 +14,6 @@ import time
 import typing as t
 from concurrent.futures import Future
 
-# multiprocessing.Event is a method, not a class
-# to annotate, we need the "real" class
-# see: https://github.com/python/typeshed/issues/4266
-from multiprocessing.synchronize import Event as EventType
-
 import globus_compute_endpoint.endpoint.config
 import pika.exceptions
 import setproctitle
@@ -107,7 +102,7 @@ class EndpointInterchange:
         self.time_to_quit = False
         self.heartbeat_period = self.config.heartbeat_period
 
-        self.pending_task_queue: multiprocessing.Queue = multiprocessing.Queue()
+        self.pending_task_queue: queue.Queue = queue.Queue()
 
         self._reconnect_fail_counter = 0
         self.reconnect_attempt_limit = max(1, reconnect_attempt_limit)
@@ -147,43 +142,43 @@ class EndpointInterchange:
             run_dir=self.logdir,
         )
 
-    def migrate_tasks_to_internal(
-        self,
-        connection_params: dict,
-        endpoint_uuid: str,
-        pending_task_queue: multiprocessing.Queue,
-        quiesce_event: EventType,
-    ) -> multiprocessing.Process:
-        """Pull tasks from the incoming tasks 0mq pipe onto the internal
-        pending task queue
+    # def migrate_tasks_to_internal(
+    #     self,
+    #     connection_params: dict,
+    #     endpoint_uuid: str,
+    #     pending_task_queue: multiprocessing.Queue,
+    #     quiesce_event: EventType,
+    # ) -> multiprocessing.Process:
+    #     """Pull tasks from the incoming tasks 0mq pipe onto the internal
+    #     pending task queue
 
-        Parameters:
-        -----------
-        connection_params: pika.connection.Parameters
-              Connection params to connect to the service side Tasks queue
+    #     Parameters:
+    #     -----------
+    #     connection_params: pika.connection.Parameters
+    #           Connection params to connect to the service side Tasks queue
 
-        endpoint_uuid: endpoint_uuid str
+    #     endpoint_uuid: endpoint_uuid str
 
-        pending_task_queue: multiprocessing.Queue
-              Internal queue to which tasks should be migrated
+    #     pending_task_queue: multiprocessing.Queue
+    #           Internal queue to which tasks should be migrated
 
-        quiesce_event : EventType
-              Event to let the thread know when it is time to die.
-        """
-        try:
-            log.info(f"Starting the TaskQueueSubscriber as {endpoint_uuid}")
-            task_q_proc = TaskQueueSubscriber(
-                queue_info=connection_params,
-                external_queue=pending_task_queue,
-                quiesce_event=quiesce_event,
-                endpoint_id=endpoint_uuid,
-            )
-            task_q_proc.start()
-        except Exception:
-            log.exception("Unhandled exception in TaskQueueSubscriber")
-            raise
+    #     quiesce_event : EventType
+    #           Event to let the thread know when it is time to die.
+    #     """
+    #     try:
+    #         log.info(f"Starting the TaskQueueSubscriber as {endpoint_uuid}")
+    #         task_q_proc = TaskQueueSubscriber(
+    #             queue_info=connection_params,
+    #             external_queue=pending_task_queue,
+    #             quiesce_event=quiesce_event,
+    #             endpoint_id=endpoint_uuid,
+    #         )
+    #         task_q_proc.start()
+    #     except Exception:
+    #         log.exception("Unhandled exception in TaskQueueSubscriber")
+    #         raise
 
-        return task_q_proc
+    #     return task_q_proc
 
     def quiesce(self):
         """Temporarily stop everything on the interchange in order to reach a consistent
@@ -192,8 +187,8 @@ class EndpointInterchange:
         log.info("Interchange Quiesce in progress (stopping and joining processes)")
         self._quiesce_event.set()
 
-        log.info("Waiting for quiesce complete")
-        self._task_puller_proc.join()
+        # log.info("Waiting for quiesce complete")
+        # self._task_puller_proc.join()
 
         log.info("Quiesce done")
 
@@ -287,7 +282,8 @@ class EndpointInterchange:
                 break
 
             try:
-                self._start_threads_and_main()
+                # self._start_threads_and_main()
+                self._main_loop()
             except pika.exceptions.ConnectionClosedByBroker as e:
                 log.warning(f"AMQP service closed connection: {e}")
             except pika.exceptions.ProbableAuthenticationError as e:
@@ -312,15 +308,15 @@ class EndpointInterchange:
         self.cleanup()
         log.info("EndpointInterchange shutdown complete.")
 
-    def _start_threads_and_main(self):
-        self._task_puller_proc = self.migrate_tasks_to_internal(
-            self.task_q_info,
-            self.endpoint_id,
-            self.pending_task_queue,
-            self._quiesce_event,
-        )
+    # def _start_threads_and_main(self):
+    #     self._task_puller_proc = self.migrate_tasks_to_internal(
+    #         self.task_q_info,
+    #         self.endpoint_id,
+    #         self.pending_task_queue,
+    #         self._quiesce_event,
+    #     )
 
-        self._main_loop()
+    #     self._main_loop()
 
     def _main_loop(self):
         """
@@ -339,6 +335,11 @@ class EndpointInterchange:
         this method.
         """
         log.debug("_main_loop begins")
+
+        task_q_subscriber = TaskQueueSubscriber(
+            queue_info=self.task_q_info, external_queue=self.pending_task_queue
+        )
+        task_q_subscriber.start()
 
         results_publisher = ResultPublisher(queue_info=self.result_q_info)
         results_publisher.start()
@@ -633,6 +634,8 @@ class EndpointInterchange:
             log.warning(
                 "Unable to send final heartbeat (timeout sending); ignoring for quiesce"
             )
+
+        task_q_subscriber.stop()
         results_publisher.stop()
 
         log.debug("_main_loop exits")

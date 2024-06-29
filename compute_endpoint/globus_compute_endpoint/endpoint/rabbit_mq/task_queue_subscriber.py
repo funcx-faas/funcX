@@ -1,193 +1,298 @@
 from __future__ import annotations
 
 import logging
-import multiprocessing
-import signal
-
-# multiprocessing.Event is a method, not a class
-# to annotate, we need the "real" class
-# see: https://github.com/python/typeshed/issues/4266
-from multiprocessing.synchronize import Event as EventType
+import os
+import queue
+import random
+import threading
+import time
+import typing as t
 
 import pika
-import pika.channel
-import pika.exceptions
-import pika.frame
+from globus_compute_endpoint.endpoint.utils import _redact_url_creds
 
-from .base import SubscriberProcessStatus
+if t.TYPE_CHECKING:
+    from pika.channel import Channel
+    from pika.frame import Method
+    from pika.spec import Basic, BasicProperties
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
-class TaskQueueSubscriber(multiprocessing.Process):
+class TaskQueueSubscriber(threading.Thread):
     """The TaskQueueSubscriber is a direct rabbitMQ pipe subscriber that uses
     the SelectConnection adaptor to enable performance consumption of messages
     from the service
 
     """
 
-    EXCHANGE_NAME = "tasks"
-    EXCHANGE_TYPE = "direct"
-
     def __init__(
         self,
         *,
-        endpoint_id: str,
         queue_info: dict,
-        external_queue: multiprocessing.Queue,
-        quiesce_event: EventType,
+        external_queue: queue.Queue,
+        poll_period_s: float = 0.5,
+        connect_attempt_limit: int = 7200,
+        channel_close_window_s: int = 10,
+        channel_close_window_limit: int = 3,
+        thread_name: str | None = None,
     ):
         """
 
         Parameters
         ----------
-        queue_info: Queue information
-             Dictionary that includes the key "connection_url", as well as exchange
-             and queue declaration information specified by the server.
+        queue_info: dict
+            Dictionary that includes the key "connection_url", as well as
+            exchange and queue declaration information specified by the
+            server.
 
-        external_queue: multiprocessing.Queue
-             Each incoming message will be pushed to the queue.
-             Please note that upon pushing a message into this queue, it will be
-             marked as delivered.
+        external_queue: queue.Queue
+            Each incoming message will be pushed to the queue. Please note
+            that upon pushing a message into this queue, it will be marked as
+            delivered.
 
-        quiesce_event: multiprocessing.Event
-             This event is used to communicate a failure on the subscriber
+        poll_period_s: float
+            How often to perform housekeeping tasks (ACKing messages upstream,
+            checking stop_event, etc.)
 
-        endpoint_id: endpoint uuid string
+        connect_attempt_limit: int
+            Number of connection attempts to fail before giving up.  The
+            connection counter will reset to 0 after the connection is
+            sustained for 60s, so transient network errors should not build
+            up to a future failure.)
+
+        channel_close_window_s: int
+            Window of time to count channel close events
+
+        channel_close_window_limit: int
+            Limit of channel close events (within ``channel_close_window_s``)
+            before shutting down the thread.
+
+        thread_name: str | None
+            Name the backing thread; per Python's implementation, this name has
+            no semantics.
+            default: implementation generated value.
         """
 
         super().__init__()
-        self.status = SubscriberProcessStatus.parent
 
-        self.endpoint_id = endpoint_id
-        self.external_queue = external_queue
         self.queue_info = queue_info
-        self.quiesce_event = quiesce_event
-
-        self._channel_closed = multiprocessing.Event()
-        self._cleanup_complete = multiprocessing.Event()
+        self.external_queue = external_queue
+        self._stop_event = threading.Event()
+        self._channel_closed = threading.Event()
 
         self._connection: pika.SelectConnection | None = None
-        self._channel: pika.channel.Channel | None = None
+        self._channel: Channel | None = None
         self._consumer_tag: str | None = None
 
-        self._watcher_poll_period = 0.1  # seconds
-        logger.debug("Init done")
+        # how many times to attempt connection before giving up and shutting
+        # down the thread
+        self.connect_attempt_limit = connect_attempt_limit
+        self._connection_tries = 0  # count of connection events; reset on success
+
+        # invalid until set in start_consuming
+        self._connected_at: int | None = None
+
+        # list of times that channel was last closed
+        self._channel_closes: list[float] = []
+
+        # how long a time frame to keep previous channel close times
+        self.channel_close_window_s = channel_close_window_s
+
+        # how many times allowed to retry opening a channel in the above time
+        # window before giving up and shutting down the thread
+        self.channel_close_window_limit = channel_close_window_limit
+
+        self._poll_period_s = poll_period_s
+        if thread_name:
+            self.name = thread_name
+
+        log.debug("Init done")
+
+    def run(self):
+        log.debug("%s AMQP thread begins", self)
+        idle_for_s = 0.0
+        while (
+            not self._stop_event.is_set()
+            and self._connection_tries < self.connect_attempt_limit
+        ):
+            if self._connection or self._connection_tries:
+                idle_for_s = random.uniform(0.5, 10)
+                msg = f"%s AMQP reconnecting in {idle_for_s:.1f}s."
+                log.debug(msg, self)
+                if self._connection_tries == self.connect_attempt_limit - 1:
+                    log.warning(f"{msg}  (final attempt)", self)
+
+            if self._stop_event.wait(idle_for_s):
+                break
+
+            self._connection_tries += 1
+            try:
+                log.debug(
+                    "%r Opening connection to AMQP service.  Attempt: %s (of %s)",
+                    self,
+                    self._connection_tries,
+                    self.connect_attempt_limit,
+                )
+                if not log.isEnabledFor(logging.DEBUG):
+                    if self._connection_tries == 1:
+                        log.info(f"{self!r} Opening connection to AMQP service.")
+                    elif self._connection_tries == 2:
+                        log.info(
+                            f"{self!r} Opening connection to AMQP service (second"
+                            " attempt).  Will continue for up to"
+                            f" {self.connect_attempt_limit} attempts.  To log all"
+                            f" attempts, use `--debug`."
+                        )
+                self._connection = self._connect()
+                self._event_watcher()
+                self._connection.ioloop.start()
+            except Exception:
+                log.exception("%s Unhandled exception: shutting down connection.", self)
+        self._stop_event.set()
+        log.debug("%s Shutdown complete", self)
+
+    def stop(self) -> None:
+        log.info("Stopping thread")
+        self._stop_event.set()
 
     def _connect(self) -> pika.SelectConnection:
         pika_params = pika.URLParameters(self.queue_info["connection_url"])
         return pika.SelectConnection(
             pika_params,
-            on_open_callback=self._on_connection_open,
             on_close_callback=self._on_connection_closed,
             on_open_error_callback=self._on_open_failed,
+            on_open_callback=self._on_connection_open,
         )
 
-    def _on_connection_open(self, _unused_connection):
-        logger.info("Connection opened")
-        self.open_channel()
+    def _on_open_failed(self, mq_conn: pika.BaseConnection, exc: str | Exception):
+        count = f"[attempt {self._connection_tries} (of {self.connect_attempt_limit})]"
+        if isinstance(exc, pika.exceptions.ProbableAuthenticationError):
+            count = "[invalid credentials; unrecoverable]"
+            self._connection_tries = self.connect_attempt_limit
 
-    def _on_open_failed(self, *args):
-        logger.warning(f"Connection failed to open : {args}")
+        pid = f"(pid: {os.getpid()})"
+        exc_text = f"Failed to open connection - ({exc.__class__.__name__}) {exc}"
+        msg = f"{count} {pid} {exc_text}"
+        log.debug("%r %s", self, msg)
+        if self._connection_tries == 1:
+            log.warning(f"{self!r} {msg}")
 
-    def _on_connection_closed(self, connection, exception):
-        """This method is invoked by pika when the connection to RabbitMQ is
-        closed unexpectedly. Since it is unexpected, we will reconnect to
-        RabbitMQ if it disconnects.
+        if not (self._connection_tries < self.connect_attempt_limit):
+            self._stop_event.set()
+            log.error(f"{self!r} {msg}")
+        mq_conn.ioloop.stop()
 
-        :param pika.connection.Connection connection: The closed connection obj
-        :param exception: Exception object
-        """
-        logger.warning(f"Connection closing: {exception}")
-        self._channel = None
-        # Setting the quiesce_event will trigger shutdown via the event_watcher
-        self.quiesce_event.set()
+    def _on_connection_closed(self, mq_conn: pika.BaseConnection, exc: Exception):
+        msg_fmt = "%r Connection closed: %s"
+        log.debug(msg_fmt, self, exc)
+        if self._connection_tries == 1:
+            # if 1, then we've not been stable for more than 60s (see _event_watcher)
+            log.info(msg_fmt, self, exc)
+            log.warning(f"{self!r} Unable to sustain connection; retrying ...")
 
-    def reconnect(self):
-        """Will be invoked by the IOLoop timer if the connection is
-        closed. See the on_connection_closed method.
+    def _on_connection_open(self, _mq_conn: pika.BaseConnection):
+        log.debug("%r Connection established; creating channel", self)
+        self._open_channel()
 
-        """
-        # This is the old connection IOLoop instance, stop its ioloop
-        self._connection.ioloop.stop()
+    def _open_channel(self):
+        if self._connection and self._connection.is_open:
+            self._connection.channel(on_open_callback=self._on_channel_open)
 
-        if self.status is SubscriberProcessStatus.running:
-            # Create a new connection
-            self._connection = self._connect()
+    def _on_channel_open(self, mq_chan: Channel):
+        self._channel = mq_chan
 
-            # There is now a new connection, needs a new ioloop to run
-            self._connection.ioloop.start()
+        mq_chan.add_on_close_callback(self._on_channel_closed)
+        mq_chan.add_on_cancel_callback(self._on_consumer_cancelled)
 
-    def open_channel(self):
-        """Open a new channel with RabbitMQ by issuing the Channel.Open RPC
-        command. When RabbitMQ responds that the channel is open, the
-        on_channel_open callback will be invoked by pika.
-
-        """
-        logger.info("Creating a new channel")
-        self._connection.channel(on_open_callback=self._on_channel_open)
-
-    def _on_channel_open(self, channel: pika.channel.Channel):
-        """This method is invoked by pika when the channel has been opened.
-        The channel object is passed in so we can make use of it.
-
-        Since the channel is now open, we'll declare the EXCHANGE_NAME to use.
-
-        :param pika.channel.Channel channel: The channel object
-
-        """
-        logger.info(f"Channel opened: {channel}")
-        self._channel = channel
-
-        logger.debug("Adding channel close callback")
-        channel.add_on_close_callback(self._on_channel_closed)
-
-        logger.debug("Adding consumer cancellation callback")
-        channel.add_on_cancel_callback(self.on_consumer_cancelled)
-
-        logger.info(f"Ensuring exchange exists: {self.queue_info['exchange']}")
-        channel.exchange_declare(
-            passive=True,  # *we* don't create the exchange
-            callback=self._on_exchange_declareok,
-            exchange=self.queue_info["exchange"],
+        log.debug(
+            "%r Channel %s opened (%s)",
+            self,
+            mq_chan.channel_number,
+            mq_chan.connection.params,
         )
+        self._start_consuming()
 
-    def _on_channel_closed(self, channel, exception):
-        """Invoked by pika when RabbitMQ unexpectedly closes the channel.
-        Channels are usually closed if you attempt to do something that
-        violates the protocol, such as re-declare an EXCHANGE_NAME or queue with
-        different parameters. In this case, we'll close the connection
-        to shutdown the object.
+    def _on_channel_closed(self, mq_chan: Channel, exc: Exception):
+        self._consumer_tag = None
+        now = time.monotonic()
+        then = now - self.channel_close_window_s
+        self._channel_closes = [cc for cc in self._channel_closes if cc > then]
+        self._channel_closes.append(now)
+        if len(self._channel_closes) < self.channel_close_window_limit:
+            if self._stop_event.is_set():
+                return
+            msg = f"{self} Channel closed  [{mq_chan}\n  ({exc})]"
+            log.debug(msg, exc_info=exc)
+            log.warning(msg)
+            mq_chan.connection.ioloop.call_later(1, self._open_channel)
 
-        This is also invoked at the end of a successful client-initiated close, as when
-        `connection.close()` is called and closes any open channels.
-
-        :param pika.channel.Channel: The closed channel
-        :param Exception: exception from pika
-        """
-        logger.warning(f"Channel:{channel} was closed: ({exception}")
-        if isinstance(exception, pika.exceptions.ChannelClosedByBroker):
-            logger.warning("Channel closed by RabbitMQ broker")
-            if "exclusive use" in exception.reply_text:
-                logger.exception(
-                    "Channel closed by RabbitMQ broker due to exclusive "
-                    "ownership by an active endpoint"
-                )
-                logger.warning("Channel will close without connection retry")
-        elif isinstance(exception, pika.exceptions.ChannelClosedByClient):
-            logger.debug("Detected channel closed by client")
         else:
-            logger.exception("Channel closed by unhandled exception.")
-        self.status = SubscriberProcessStatus.closing
-        self.quiesce_event.set()
-        logger.debug("marking channel as closed")
-        self._channel_closed.set()
+            log.error(
+                f"{self} Unable to sustain channel after {len(self._channel_closes)}"
+                f" attempts in {self.channel_close_window_limit} seconds. ({exc})"
+            )
+            self._stop_event.set()
 
-    def _on_exchange_declareok(self, _frame: pika.frame.Method):
+    def _on_consumer_cancelled(self, frame: Method[Basic.CancelOk]):
+        log.debug("%s Consumer cancelled remotely, shutting down: %r", self, frame)
+        if self._channel:
+            self._channel.close()
+
+    def _start_consuming(self):
+        try:
+            self._consumer_tag = self._channel.basic_consume(
+                queue=self.queue_info["queue"],
+                on_message_callback=self._on_message,
+                exclusive=True,
+            )
+            self._connected_at = time.time()
+        except Exception as e:
+            log.warning(
+                f"{self} Unable to start consuming messages:"
+                f" ({e.__class__.__name__}) {e}"
+            )
+            self._stop_ioloop()
+        else:
+            qname = self.queue_info["queue"]
+            log.info(f"{self!r} Awaiting messages from queue: {qname}")
+
+    def _on_cancelok(self, _frame: Method[Basic.CancelOk]):
+        self._close_channel()
+
+    def _close_channel(self):
+        log.debug("%s Closing the channel", self)
+        self._channel.close()
+
+    def _stop_ioloop(self):
+        """
+        Gracefully stop the ioloop.
+
+        In an effort play nice with upstream, attempt to follow the AMQP protocol
+        by closing the channel and connections gracefully.  This method will
+        rearm itself while the connection is still open, continually working
+        toward eventually and gracefully stopping the connection, before finally
+        stopping the ioloop.
+        """
+        if self._connection:
+            self._connection.ioloop.call_later(0.1, self._stop_ioloop)
+            if self._connection.is_open:
+                if self._channel:
+                    if self._channel.is_open:
+                        self._channel.close()
+                    elif self._channel.is_closed:
+                        self._channel = None
+                else:
+                    self._connection.close()
+            elif self._connection.is_closed:
+                self._connection.ioloop.stop()
+                self._connection = None
+
+    def _on_exchange_declareok(self, _frame: Method):
         """
         Invoked by pika when RabbitMQ has finished the Exchange.Declare RPC command.
         """
-        logger.info(
+        log.info(
             "Exchange declared successfully.  Ensuring queue exists:"
             f" {self.queue_info['queue']}"
         )
@@ -198,171 +303,59 @@ class TaskQueueSubscriber(multiprocessing.Process):
             queue=self.queue_info["queue"],
         )
 
-    def _on_queue_declareok(self, _frame: pika.frame.Method):
-        self.start_consuming()
+    def _on_queue_declareok(self, _frame: Method):
+        self._start_consuming()
 
-    def start_consuming(self):
-        """This method sets up the consumer by first calling
-        add_on_cancel_callback so that the object is notified if RabbitMQ
-        cancels the consumer. It then issues the Basic.Consume RPC command
-        which returns the consumer tag that is used to uniquely identify the
-        consumer with RabbitMQ. We keep the value to use it when we want to
-        cancel consuming. The on_message method is passed in as a callback pika
-        will invoke when a message is fully received.
-
-        """
-        logger.info("Issuing consumer related RPC commands")
-        self._consumer_tag = self._channel.basic_consume(
-            queue=self.queue_info["queue"],
-            on_message_callback=self.on_message,
-            exclusive=True,
-        )
-
-    def on_consumer_cancelled(self, method_frame):
-        """Invoked by pika when RabbitMQ sends a Basic.Cancel for a consumer
-        receiving messages.
-
-        :param pika.frame.Method method_frame: The Basic.Cancel frame
-
-        """
-        logger.info("Consumer was cancelled remotely, shutting down: %r", method_frame)
-        if self._channel:
-            self._channel.close()
-
-    def on_message(
+    def _on_message(
         self,
-        channel: pika.channel.Channel,
-        basic_deliver: pika.spec.Basic.Deliver,
-        properties: pika.spec.BasicProperties,
+        mq_chan: Channel,
+        basic_deliver: Basic.Deliver,
+        properties: BasicProperties,
         body: bytes,
     ):
-        """Invoked by pika when a message is delivered from RabbitMQ. The
-        channel is passed for your convenience. The basic_deliver object that
-        is passed in carries the EXCHANGE_NAME, routing key, delivery tag and
-        a redelivered flag for the message. The properties passed in is an
-        instance of BasicProperties with the message properties and the body
-        is the message that was sent.
-        """
-        logger.debug(
-            "Received message from %s: %s, %s",
-            basic_deliver.delivery_tag,
-            properties.app_id,
-            body,
-        )
-
-        # Not sure if we need to do this in a locked context,
-        # rabbit's ACK system should make sure you don't lose tasks.
         try:
-            # TODO move ack'ing the message to final processing instead
+            d_tag = basic_deliver.delivery_tag
+        except Exception as e:
+            log.debug(
+                "Invalid Basic.Deliver; unable to process message.  (%s) %s",
+                e.__class__.__name__,
+                e,
+            )
+            return
+
+        try:
+            log.debug(
+                "%s Received message from %s: %s, %s",
+                self,
+                d_tag,
+                properties.app_id,
+                _redact_url_creds(body),
+            )
             headers = properties.headers if properties.headers else {}
-            self.external_queue.put([headers, body])
+            self.external_queue.put((headers, body))
         except Exception:
             # No sense in waiting for the RMQ default 30m timeout; let it know
             # *now* that this message failed.
-            logger.exception("External queue put failed")
-            channel.basic_nack(basic_deliver.delivery_tag, requeue=True)
+            log.exception("%s External queue put failed", self)
+            mq_chan.basic_nack(d_tag, requeue=True)
         else:
-            channel.basic_ack(basic_deliver.delivery_tag)
-            logger.debug("Acknowledged message: %s", basic_deliver.delivery_tag)
+            mq_chan.basic_ack(d_tag)
+            log.debug("Acknowledged message: %s", d_tag)
 
-    def stop_consuming(self):
-        """Tell RabbitMQ that you would like to stop consuming by sending the
-        Basic.Cancel RPC command.
+    def _event_watcher(self):
+        """Polls the stop_event periodically to trigger a shutdown"""
+        if self._stop_event.is_set():
+            log.debug("%r Shutting down per stop event", self)
+            self._stop_ioloop()
+            return
 
-        """
-        if self._channel:
-            logger.info("Sending a Basic.Cancel RPC command to RabbitMQ")
-            self._channel.basic_cancel(
-                consumer_tag=self._consumer_tag, callback=self.on_cancelok
-            )
+        if self._connection_tries and self._consumer_tag and self._connected_at:
+            # we're connected ...
+            if time.time() - self._connected_at > 60:
+                # ... and connection stable for 60s; good to reset connection tries
+                self._connection_tries = 0
+                log.debug(
+                    "%r Connection deemed stable; resetting connection tally", self
+                )
 
-    def on_cancelok(self, unused_frame):
-        """This method is invoked by pika when RabbitMQ acknowledges the
-        cancellation of a consumer. At this point we will close the channel.
-        This will invoke the on_channel_closed method once the channel has been
-        closed, which will in-turn close the connection.
-
-        :param pika.frame.Method unused_frame: The Basic.CancelOk frame
-
-        """
-        logger.info("RabbitMQ acknowledged the cancellation of the consumer")
-        self.close_channel()
-
-    def close_channel(self):
-        """Call to close the channel with RabbitMQ cleanly by issuing the
-        Channel.Close RPC command.
-
-        """
-        logger.info("Closing the channel")
-        self._channel.close()
-
-    def _shutdown(self):
-        logger.debug("set status to 'closing'")
-        self.status = SubscriberProcessStatus.closing
-
-        if self._connection and self._connection.is_open:
-            logger.debug("closing connection")
-            try:
-                self._connection.close()
-            except Exception as exc:
-                logger.warning(f"Unexpected error while closing connection: {exc}")
-
-        logger.debug("stopping ioloop")
-        self._connection.ioloop.stop()
-        logger.debug("waiting until channel is closed (timeout=1 second)")
-        if not self._channel_closed.wait(1.0):
-            logger.warning("reached timeout while waiting for channel closed")
-        logger.debug("closing connection to mp queue")
-        self.external_queue.close()
-        logger.debug("joining mp queue background thread")
-        self.external_queue.join_thread()
-        logger.info("shutdown done, setting cleanup event")
-        self._cleanup_complete.set()
-
-    def event_watcher(self):
-        """Polls the quiesce_event periodically to trigger a shutdown"""
-        if self.quiesce_event.is_set():
-            logger.info("Shutting down task queue reader due to quiesce event.")
-            try:
-                self._shutdown()
-            except Exception:
-                logger.exception("error while shutting down")
-                raise
-            logger.info("Shutdown complete")
-        else:
-            self._connection.ioloop.call_later(
-                self._watcher_poll_period, self.event_watcher
-            )
-
-    def handle_sigterm(self, sig_num, curr_stack_frame):
-        logger.warning("Received SIGTERM, setting stop event")
-        self.quiesce_event.set()
-
-    def run(self):
-        """Run the example consumer by connecting to RabbitMQ and then
-        starting the IOLoop to block and allow the SelectConnection to
-        operate.
-
-        Note: Only one of these options should be used.
-        """
-        signal.signal(signal.SIGTERM, self.handle_sigterm)
-        self.status = SubscriberProcessStatus.running
-        try:
-            self._connection = self._connect()
-            self.event_watcher()
-            self._connection.ioloop.start()
-        except Exception:
-            logger.exception("Failed to start subscriber")
-            self.quiesce_event.set()
-
-    def stop(self) -> None:
-        """stop() is called by the parent to shutdown the subscriber"""
-        logger.info("Stopping")
-        self.quiesce_event.set()
-        logger.info("Waiting for cleanup_complete")
-        if not self._cleanup_complete.wait(2 * self._watcher_poll_period):
-            logger.warning("Reached timeout while waiting for cleanup complete")
-        # join shouldn't block if the above did not raise a timeout
-        self.join()
-        self.close()
-        logger.info("Cleanup done")
+        self._connection.ioloop.call_later(self._poll_period_s, self._event_watcher)
