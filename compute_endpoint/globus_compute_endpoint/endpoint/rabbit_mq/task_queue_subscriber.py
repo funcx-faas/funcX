@@ -20,17 +20,11 @@ log = logging.getLogger(__name__)
 
 
 class TaskQueueSubscriber(threading.Thread):
-    """The TaskQueueSubscriber is a direct rabbitMQ pipe subscriber that uses
-    the SelectConnection adaptor to enable performance consumption of messages
-    from the service
-
-    """
-
     def __init__(
         self,
         *,
         queue_info: dict,
-        external_queue: queue.Queue,
+        pending_task_queue: queue.Queue,
         poll_period_s: float = 0.5,
         connect_attempt_limit: int = 7200,
         channel_close_window_s: int = 10,
@@ -46,10 +40,10 @@ class TaskQueueSubscriber(threading.Thread):
             exchange and queue declaration information specified by the
             server.
 
-        external_queue: queue.Queue
-            Each incoming message will be pushed to the queue. Please note
-            that upon pushing a message into this queue, it will be marked as
-            delivered.
+        pending_task_queue: queue.Queue
+            Messages from upstream will be placed in this queue. Consumers of
+            this queue must call .to_ack() with the message id when finished
+            processing
 
         poll_period_s: float
             How often to perform housekeeping tasks (ACKing messages upstream,
@@ -77,7 +71,8 @@ class TaskQueueSubscriber(threading.Thread):
         super().__init__()
 
         self.queue_info = queue_info
-        self.external_queue = external_queue
+        self.pending_task_queue = pending_task_queue
+        self._to_ack: queue.SimpleQueue[int] = queue.SimpleQueue()
         self._stop_event = threading.Event()
         self._channel_closed = threading.Event()
 
@@ -151,6 +146,9 @@ class TaskQueueSubscriber(threading.Thread):
                 log.exception("%s Unhandled exception: shutting down connection.", self)
         self._stop_event.set()
         log.debug("%s Shutdown complete", self)
+
+    def ack(self, msg_tag: int):
+        self._to_ack.put(msg_tag)
 
     def stop(self) -> None:
         log.info("Stopping thread")
@@ -332,15 +330,12 @@ class TaskQueueSubscriber(threading.Thread):
                 _redact_url_creds(body),
             )
             headers = properties.headers if properties.headers else {}
-            self.external_queue.put((headers, body))
+            self.pending_task_queue.put((d_tag, headers, body))
         except Exception:
             # No sense in waiting for the RMQ default 30m timeout; let it know
             # *now* that this message failed.
             log.exception("%s External queue put failed", self)
             mq_chan.basic_nack(d_tag, requeue=True)
-        else:
-            mq_chan.basic_ack(d_tag)
-            log.debug("Acknowledged message: %s", d_tag)
 
     def _event_watcher(self):
         """Polls the stop_event periodically to trigger a shutdown"""
@@ -357,5 +352,17 @@ class TaskQueueSubscriber(threading.Thread):
                 log.debug(
                     "%r Connection deemed stable; resetting connection tally", self
                 )
+
+        delivery_tags = []
+        try:
+            while True:
+                delivery_tags.append(self._to_ack.get(block=False))
+        except queue.Empty:
+            pass
+        if delivery_tags:
+            delivery_tags.sort()  # nominally a no-op
+            latest_msg_id = delivery_tags[-1]
+            self._channel.basic_ack(latest_msg_id, multiple=True)
+            log.debug("%r Acknowledged through message: %s", self, latest_msg_id)
 
         self._connection.ioloop.call_later(self._poll_period_s, self._event_watcher)

@@ -337,7 +337,7 @@ class EndpointInterchange:
         log.debug("_main_loop begins")
 
         task_q_subscriber = TaskQueueSubscriber(
-            queue_info=self.task_q_info, external_queue=self.pending_task_queue
+            queue_info=self.task_q_info, pending_task_queue=self.pending_task_queue
         )
         task_q_subscriber.start()
 
@@ -385,7 +385,8 @@ class EndpointInterchange:
                     continue  # nominally == break; but let event do it
 
                 try:
-                    prop_headers, body = self.pending_task_queue.get(timeout=1)
+                    d_tag, prop_headers, body = self.pending_task_queue.get(timeout=1)
+                    task_q_subscriber.ack(d_tag)
 
                     fid: str = prop_headers.get("function_uuid")
                     tid: str = prop_headers.get("task_uuid")
