@@ -38,7 +38,7 @@ def test_executor_atexit_handler_catches_all_instances(tmp_path):
         """
         import random
         from globus_compute_sdk import Executor
-        from globus_compute_sdk.sdk.executor import _REGISTERED_FXEXECUTORS
+        from globus_compute_sdk.sdk.executor import _REGISTERED_EXECUTORS
 
         gcc = " a fake client"
         num_executors = random.randrange(1, 10)
@@ -48,8 +48,8 @@ def test_executor_atexit_handler_catches_all_instances(tmp_path):
         gce = Executor(client=gcc)
 
         num_executors += 2
-        assert len(_REGISTERED_FXEXECUTORS) == num_executors, (
-            f"Verify test setup: {len(_REGISTERED_FXEXECUTORS)} != {num_executors}"
+        assert len(_REGISTERED_EXECUTORS) == num_executors, (
+            f"Verify test setup: {len(_REGISTERED_EXECUTORS)} != {num_executors}"
         )
         gce.shutdown()  # only shutting down _last_ instance.  Should still exit cleanly
         """

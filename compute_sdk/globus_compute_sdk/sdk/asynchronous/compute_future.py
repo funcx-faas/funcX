@@ -14,6 +14,11 @@ class ComputeFuture(Future):
     not be populated immediately, but will appear later when the task is
     submitted to the Globus Compute services."""
 
+    _metadata: dict
+    """Used to store metadata related to this Future. For example, we may
+    store the ID of the submitting Executor so we can tie it back."""
+
     def __init__(self, task_id: t.Optional[str] = None):
         super().__init__()
         self.task_id = task_id
+        self._metadata = {}
