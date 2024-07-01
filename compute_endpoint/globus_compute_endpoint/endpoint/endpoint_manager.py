@@ -973,8 +973,9 @@ class EndpointManager:
             (gc_dir / ep_name).mkdir(mode=0o700, parents=True, exist_ok=True)
 
             user_opts = kwargs.get("user_opts", {})
+            user_runtime = kwargs.get("user_runtime", {})
             user_config = render_config_user_template(
-                self._config, template_str, user_config_schema, user_opts
+                self._config, template_str, user_config_schema, user_opts, user_runtime
             )
             stdin_data_dict = {
                 "amqp_creds": kwargs.get("amqp_creds"),

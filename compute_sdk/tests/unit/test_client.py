@@ -1,9 +1,10 @@
+import sys
 import uuid
 from unittest import mock
 
 import globus_compute_sdk as gc
 import pytest
-from globus_compute_sdk import ContainerSpec
+from globus_compute_sdk import ContainerSpec, __version__
 from globus_compute_sdk.errors import TaskExecutionFailed
 from globus_compute_sdk.sdk.login_manager import LoginManager
 from globus_compute_sdk.sdk.utils import get_env_details
@@ -13,6 +14,7 @@ from globus_compute_sdk.sdk.web_client import (
 )
 from globus_compute_sdk.serialize import ComputeSerializer
 from globus_compute_sdk.serialize.concretes import SELECTABLE_STRATEGIES
+from globus_sdk import __version__ as __version_globus__
 
 
 @pytest.fixture(autouse=True)
@@ -207,6 +209,17 @@ def test_batch_respects_serialization_strategy(gcc, strategy):
     expected = {fn_id: [ser.pack_buffers([ser.serialize(args), ser.serialize(kwargs)])]}
 
     assert tasks == expected
+
+
+def test_batch_includes_user_runtime_info(gcc):
+    batch = gcc.create_batch()
+    payload = batch.prepare()
+
+    assert payload["user_runtime"] == {
+        "globus_compute_sdk_version": __version__,
+        "globus_sdk_version": __version_globus__,
+        "python_version": sys.version,
+    }
 
 
 def test_build_container(mocker, gcc, randomstring):

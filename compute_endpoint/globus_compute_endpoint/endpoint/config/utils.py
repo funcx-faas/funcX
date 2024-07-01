@@ -18,6 +18,12 @@ from .model import ConfigModel
 log = logging.getLogger(__name__)
 
 
+RESERVED_USER_CONFIG_TEMPLATE_VARIABLES = (
+    "parent_config",
+    "user_runtime",
+)
+
+
 def _load_config_py(conf_path: pathlib.Path) -> Config | None:
     if not conf_path.exists():
         return None
@@ -147,15 +153,18 @@ def load_user_config_schema(endpoint_dir: pathlib.Path) -> dict | None:
 
 def _validate_user_opts(user_opts: dict, schema: dict | None) -> None:
     """Validates user config options, optionally against a JSON schema."""
-    import jsonschema  # Only load package when called by EP manager
 
-    if "parent_config" in user_opts:
-        raise ValueError(
-            "'parent_config' is a reserved word and cannot be passed in via user config"
-        )
+    for reserved_word in RESERVED_USER_CONFIG_TEMPLATE_VARIABLES:
+        if reserved_word in user_opts:
+            raise ValueError(
+                f"'{reserved_word}' is a reserved word"
+                " and cannot be passed in via user config"
+            )
 
     if not schema:
         return
+
+    import jsonschema  # Only load package when called by EP manager
 
     try:
         jsonschema.validate(instance=user_opts, schema=schema)
@@ -224,6 +233,7 @@ def render_config_user_template(
     user_config_template: str,
     user_config_schema: dict | None = None,
     user_opts: dict | None = None,
+    user_runtime: dict | None = None,
 ) -> str:
     # N.B. Performing rendering, a mildly complicated action, *after*
     # having dropped privileges.  Take security seriously ...
@@ -240,7 +250,9 @@ def render_config_user_template(
     template = environment.from_string(user_config_template)
 
     try:
-        return template.render(**_user_opts, parent_config=parent_config)
+        return template.render(
+            **_user_opts, parent_config=parent_config, user_runtime=user_runtime
+        )
     except jinja2.exceptions.UndefinedError as e:
         log.debug("Missing required user option: %s", e)
         raise

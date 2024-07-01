@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import typing as t
 import uuid
 import warnings
@@ -21,8 +22,9 @@ from globus_compute_sdk.sdk.web_client import (
 )
 from globus_compute_sdk.serialize import ComputeSerializer, SerializationStrategy
 from globus_compute_sdk.version import __version__, compare_versions
+from globus_sdk.version import __version__ as __version_globus__
 
-from .batch import Batch
+from .batch import Batch, UserRuntime
 from .login_manager import LoginManager, LoginManagerProtocol, requires_login
 from .utils import get_env_var_with_deprecation
 
@@ -400,6 +402,11 @@ class Client:
             user_endpoint_config,
             create_websocket_queue,
             serializer=self.fx_serializer,
+            user_runtime=UserRuntime(
+                globus_compute_sdk_version=__version__,
+                globus_sdk_version=__version_globus__,
+                python_version=sys.version,
+            ),
         )
 
     @requires_login

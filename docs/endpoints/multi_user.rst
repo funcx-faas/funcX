@@ -295,7 +295,7 @@ motivated administrator.  The initial user config template implements two
 user-specifiable variables, ``endpoint_setup`` and ``worker_init``.  Both of these
 default to the empty string if not specified by the user (i.e., ``...|default()``).
 
-.. code-block:: yaml
+.. code-block:: yaml+jinja
 
    endpoint_setup: {{ endpoint_setup|default() }}
    engine:
@@ -310,10 +310,6 @@ default to the empty string if not specified by the user (i.e., ``...|default()`
 Given the above template, users submitting to this MEP would be able to specify the
 ``endpoint_setup`` and ``worker_init`` values.  All other values will remain unchanged
 when the UEP starts up.
-
-All templates additionally have access to the configuration of the parent MEP via the
-``parent_config`` variable. This is a reserved word in the Compute template
-specification, meaning users are unable to specify a value for it.
 
 As linked on the left, :doc:`there are a number of example configurations
 <endpoint_examples>` to showcase the available options, but ``idle_heartbeats_soft`` and
@@ -330,6 +326,34 @@ A heartbeat occurs every 30s; if ``idle_heartbeats_hard`` is set to 7, and no ta
 or results move (i.e., tasks received from the web service or results received from
 workers), then the endpoint will shutdown after 3m30s (7 × 30s).
 
+Every template also has access to the following variables:
+
+- ``parent_config``: Contains the configuration values of the parent MEP. Can be helpful
+  in situations involving Python-based configuration files.
+
+- ``user_runtime``: Contains information about the runtime that the user used when
+  submitting the task request, such as Python version. See |UserRuntime|_ for a complete
+  list of available information.
+
+These are reserved words and their values cannot be overidden by the user or admin,
+and an error is thrown if a user tries to send it as a user option:
+
+.. code-block:: python
+
+   mep_id = "..."
+   with Executor(
+       endpoint_id=mep_id,
+       user_endpoint_config={
+           "parent_config": "not allowed"
+       },
+   ) as ex:
+       ex.submit(some_task).result()
+
+       # the following exception is thrown:
+       # GlobusAPIError: ('POST', 'http://compute.api.globus.org/v3/endpoints/<mep_id>/submit',
+       #   'Bearer', 422, 'SEMANTICALLY_INVALID', "Request payload failed validation:
+       #   Unable to start user endpoint process for <user> [exit code: 77; (ValueError)
+       #   'parent_config' is a reserved word and cannot be passed in via user config]")
 
 ``user_config_schema.json``
 ---------------------------
@@ -455,6 +479,58 @@ a custom ``globus-compute-endpoint`` wrapper:
    exec /usr/sbin/globus-compute-endpoint "$@"
 
 (The use of ``exec`` is not critical, but keeps the process tree tidy.)
+
+
+Configuring to Accept Multiple Python Versions
+==============================================
+
+By default, Globus Compute serializes task submissions via `dill`_ with a method that
+uses Python bytecode. That's to say it does *not* serialize the source code unless
+asked to, for both technical and historical reasons. However, because the underlying
+representations that Python uses for bytecode are subject to change at the whim of the
+Python developers, if the Python version running the **SDK** that is used to serialize
+and submit a task is different from the Python version of the **worker** that
+deserializes and runs the task, the worker may error. Such errors are often hard to
+debug because they happen at a low level in Python.
+
+As a result, our recommendation is to keep Python versions in sync between SDK
+invocations and endpoint workers. This is limiting in workflows where admins have little
+control over their users' SDK environments, such as locally run Jupyter notebooks. This
+can sometimes be alleviated with `an alternate serialization strategy
+<https://globus-compute.readthedocs.io/en/stable/sdk.html#specifying-a-serialization-strategy>`_,
+but not all serialization strategies work in all environments, and admins can't enforce
+this automatically - users have to be educated on what strategy to use. A more robust
+workaround is to use the ``user_runtime`` config template variable to detect what Python
+version was used to submit the task.
+
+Say an admin wants to accept the three most recent Python versions (3.10-3.12). Using
+`conda`_, they can create an environment for each Python version they want to support,
+and launch the UEP's workers with the correct environment depending on the user's Python
+version. A config template for that might look like:
+
+.. code-block:: yaml+jinja
+
+   endpoint_setup: {{ endpoint_setup|default() }}
+   engine:
+      type: GlobusComputeEngine
+      provider:
+         type: LocalProvider
+      {% if '3.12' in user_runtime.python_version %}
+         worker_init: conda activate py312
+      {% elif '3.11' in user_runtime.python_version %}
+         worker_init: conda activate py311
+      {% elif '3.10' in user_runtime.python_version %}
+         worker_init: conda activate py310
+      {% else %}
+         worker_init: conda activate py310  # as a back up
+      {% endif %}
+
+This of course requires that there are conda environments named ``py312``, ``py311``,
+and ``py310`` with the appropriate Python versions and ``globus-compute-endpoint``
+installed.
+
+For more information on what an MEP knows about the user's runtime environment, see
+|UserRuntime|_.
 
 Debugging User Endpoints
 ========================
@@ -731,7 +807,7 @@ administrator could use the following user configuration template
 ``debug-scaling`` queue, and pre-select the obvious defaults (`per the
 documentation <https://docs.alcf.anl.gov/polaris/running-jobs/>`_):
 
-.. code-block:: yaml
+.. code-block:: yaml+jinja
 
    display_name: Polaris at ALCF - debug-scaling queue
    engine:
@@ -944,6 +1020,8 @@ Administrator Quickstart
 .. _Jinja template: https://jinja.palletsprojects.com/en/3.1.x/
 .. _Globus Connect Server Identity Mapping Guide: https://docs.globus.org/globus-connect-server/v5.4/identity-mapping-guide/#mapping_recipes
 .. _#help on the Globus Compute Slack: https://funcx.slack.com/archives/C017637NZFA
+.. |UserRuntime| replace:: ``UserRuntime``
+.. _UserRuntime: https://globus-compute.readthedocs.io/en/latest/reference/client.html#globus_compute_sdk.sdk.batch.UserRuntime
 .. _the documentation for a number of known working examples: https://globus-compute.readthedocs.io/en/latest/endpoints.html#example-configurations
 .. _JSON schema: https://json-schema.org/
 .. _automatically start the multi-user endpoint when the host boots: https://globus-compute.readthedocs.io/en/latest/endpoints.html#restarting-endpoint-when-machine-restarts
@@ -951,6 +1029,7 @@ Administrator Quickstart
 .. _virtualenv: https://pypi.org/project/virtualenv/
 .. _pipx: https://pypa.github.io/pipx/
 .. _conda: https://docs.conda.io/en/latest/
+.. _dill: https://pypi.org/project/dill/
 
 .. |Install the globus-compute-endpoint package| replace:: Install the ``globus-compute-endpoint`` package
 .. _Install the globus-compute-endpoint package:

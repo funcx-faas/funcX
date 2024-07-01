@@ -2,11 +2,27 @@ from __future__ import annotations
 
 import typing as t
 from collections import defaultdict
+from dataclasses import asdict, dataclass
 
 from globus_compute_sdk.sdk.utils.uuid_like import UUID_LIKE_T
 from globus_compute_sdk.serialize import ComputeSerializer
 
 _default_serde = ComputeSerializer()
+
+
+@dataclass
+class UserRuntime:
+    """Information about a user's runtime environment, which is sent along with task
+    submissions to the MEP user config renderer.
+
+    :param str globus_compute_sdk_version: Version of the Compute SDK
+    :param str globus_sdk_version: Version of the Globus SDK
+    :param str python_version: Python version running the Compute SDK
+    """
+
+    globus_compute_sdk_version: str
+    globus_sdk_version: str
+    python_version: str
 
 
 class Batch:
@@ -19,17 +35,19 @@ class Batch:
         user_endpoint_config: dict[str, t.Any] | None = None,
         request_queue=False,
         serializer: ComputeSerializer | None = None,
+        user_runtime: UserRuntime | None = None,
     ):
         """
         :param task_group_id: UUID of task group to which to submit the batch
         :param resource_specification: Specify resource requirements for individual task
-            execution.
+            execution
         :param user_endpoint_config: User endpoint configuration values as described and
             allowed by endpoint administrators
         :param request_queue: Whether to request a result queue from the web service;
             typically only used by the Executor
-        :param serialization_strategy: The strategy to use when serializing task
-            arguments
+        :param serializer: Used to serialize task args and kwargs
+        :param user_runtime: Information about the runtime used to create and prepare
+            this batch, such as Python and Globus Compute SDK versions
         """
         self.task_group_id = task_group_id
         self.resource_specification = resource_specification
@@ -37,6 +55,7 @@ class Batch:
         self.tasks: dict[str, list[str]] = defaultdict(list)
         self._serde = serializer or _default_serde
         self.request_queue = request_queue
+        self.user_runtime = user_runtime
 
     def __repr__(self):
         return str(self.prepare())
@@ -88,5 +107,7 @@ class Batch:
             data["resource_specification"] = self.resource_specification
         if self.user_endpoint_config:
             data["user_endpoint_config"] = self.user_endpoint_config
+        if self.user_runtime:
+            data["user_runtime"] = asdict(self.user_runtime)
 
         return data

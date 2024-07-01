@@ -31,6 +31,7 @@ from globus_compute_common.messagepack import unpack
 from globus_compute_common.messagepack.message_types import EPStatusReport
 from globus_compute_endpoint.endpoint.config import Config
 from globus_compute_endpoint.endpoint.config.utils import (
+    RESERVED_USER_CONFIG_TEMPLATE_VARIABLES,
     _validate_user_opts,
     load_user_config_schema,
     load_user_config_template,
@@ -2146,6 +2147,18 @@ def test_render_config_passes_parent_config():
     assert rendered_dict["parent_heartbeat"] == parent_cfg.heartbeat_period
 
 
+def test_render_config_passes_user_runtime():
+    template = "user_python: {{ user_runtime.python_version }}"
+    user_runtime = {"python_version": "X.Y.Z"}
+
+    rendered = render_config_user_template(
+        Config(), template, user_runtime=user_runtime
+    )
+
+    rendered_dict = yaml.safe_load(rendered)
+    assert rendered_dict["user_python"] == user_runtime["python_version"]
+
+
 @pytest.mark.parametrize(
     "data",
     [
@@ -2197,11 +2210,12 @@ def test_validate_user_config_options_invalid_schema(
     assert "user config schema is invalid" in str(a)
 
 
-def test_validate_parent_config_reserved():
+@pytest.mark.parametrize("reserved_word", RESERVED_USER_CONFIG_TEMPLATE_VARIABLES)
+def test_validate_user_opts_reserved_words(reserved_word):
     with pytest.raises(ValueError) as pyt_exc:
-        render_config_user_template(Config(), {}, user_opts={"parent_config": "foo"})
+        render_config_user_template(Config(), {}, user_opts={reserved_word: "foo"})
 
-    assert "parent_config" in str(pyt_exc)
+    assert reserved_word in str(pyt_exc)
     assert "reserved" in str(pyt_exc)
 
 
