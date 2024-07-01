@@ -22,9 +22,15 @@ pipeline {
                 script {
                     def scmVars = checkout scm
                     env.BRANCH_NAME = scmVars.GIT_BRANCH.replaceFirst(/^.*origin\//, "")
+                    env.TAG_NAME = sh(returnStdout: true, script: "git tag --contains | head -1").trim()
                     env.SOURCE_STASH_NAME = "${UUID.randomUUID()}"
                     echo "env.BRANCH_NAME = ${env.BRANCH_NAME}"
                     sh "git clean -fdx"
+
+                    // temporary hack to build for stable
+                    sh "git checkout build_for_stable"
+                    env.TAG_NAME = "v2.23.0a0"
+                    env.DEFAULT_BRANCH = "build_for_stable"
 
                     dir("compute_endpoint/packaging/") {
                         sh(script: "make show_vars")
