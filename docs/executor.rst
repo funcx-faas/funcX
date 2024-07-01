@@ -328,6 +328,8 @@ processing:
         for f in concurrent.futures.as_completed(futs):
             print("Received:", f.result())
 
+.. include:: bash_functions.rst
+
 AMQP Port
 ---------
 

@@ -9,3 +9,5 @@ Globus Compute SDK
     executor
     client
     engine
+    bash_function
+    mpi_function
