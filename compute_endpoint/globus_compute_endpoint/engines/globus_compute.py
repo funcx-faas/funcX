@@ -198,7 +198,9 @@ class GlobusComputeEngine(GlobusComputeEngineBase):
             if not os.path.isabs(self.working_dir):
                 self.working_dir = os.path.join(run_dir, self.working_dir)
         else:
-            self.working_dir = run_dir
+            # If working_dir is not specified, run task in a "TASKS" dir
+            # to collate run outputs in a single dir
+            self.working_dir = os.path.join(run_dir, "TASKS")
 
         self.endpoint_id = endpoint_id
         self.run_dir = run_dir
