@@ -197,6 +197,8 @@ def test_gcengine_start_pass_through_to_executor(
     mock_executor.provider = mock.MagicMock()
     mock_executor.status_polling_interval = 5
 
+    mocker.patch.object(GlobusComputeEngine, "_get_compute_launch_cmd")
+
     run_dir = tmp_path
     scripts_dir = str(tmp_path / "submit_scripts")
     engine = GlobusComputeEngine(executor=mock_executor)

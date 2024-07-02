@@ -806,6 +806,15 @@ _test_name_or_uuid_decorator__data = [
 ]
 
 
+def test_python_exec(
+    mocker: MockFixture,
+    mock_command_ensure,
+    mock_cli_state,
+    run_line: t.Callable,
+):
+    pass
+
+
 @pytest.mark.parametrize("name,uuid", _test_name_or_uuid_decorator__data)
 def test_name_or_uuid_decorator(tmp_path, mocker, run_line, name, uuid):
     gc_conf_dir = tmp_path / ".globus_compute"

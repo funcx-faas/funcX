@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import shlex
 import typing as t
 import uuid
@@ -141,6 +142,27 @@ class GlobusComputeEngine(GlobusComputeEngineBase):
     def encrypted(self):
         return self.executor.encrypted
 
+    def _get_compute_launch_cmd(self) -> str:
+        """Launch the worker pool via the endpoint CLI, rather than Parsl's
+        process_worker_pool.py command, which the user may not have in their
+        PATH.
+
+        Returns
+        -------
+        Customized launch command string
+        """
+        launch_cmd = self.executor.launch_cmd
+        launch_cmd = re.sub(
+            r"^process_worker_pool\.py",
+            (
+                "globus-compute-endpoint python-exec"
+                " parsl.executors.high_throughput.process_worker_pool"
+            ),
+            launch_cmd,
+        )
+        launch_cmd = " ".join(shlex.split(launch_cmd))
+        return launch_cmd
+
     def containerized_launch_cmd(self) -> str:
         """Recompose executor's launch_cmd to launch with containers
 
@@ -205,6 +227,7 @@ class GlobusComputeEngine(GlobusComputeEngineBase):
         self.executor.run_dir = self.run_dir
         script_dir = os.path.join(self.run_dir, "submit_scripts")
         self.executor.provider.script_dir = script_dir
+        self.executor.launch_cmd = self._get_compute_launch_cmd()
         if self.container_type:
             self.executor.launch_cmd = self.containerized_launch_cmd()
             logger.info(

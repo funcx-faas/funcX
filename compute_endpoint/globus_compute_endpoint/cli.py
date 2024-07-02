@@ -8,6 +8,7 @@ import logging
 import pathlib
 import re
 import shutil
+import subprocess
 import sys
 import textwrap
 import uuid
@@ -908,6 +909,22 @@ def self_diagnostic(compress: bool, log_kb: int):
                 run_self_diagnostic(log_bytes=log_bytes)
 
         click.echo(f"Successfully created {filename}")
+
+
+@app.command(
+    "python-exec",
+    context_settings=dict(ignore_unknown_options=True, allow_extra_args=True),
+)
+@click.argument("module")
+@click.help_option("-h", "--help")
+@click.pass_context
+def run_python_executable(ctx: click.Context, module: str):
+    """Run a Python module with the same interpreter as the CLI. This helps
+    to minimize PATH issues when launching workers, etc.
+
+    E.g., globus-compute-endpoint python-exec path.to.some.module
+    """
+    subprocess.run([sys.executable, "-m", module] + ctx.args)
 
 
 def create_or_choose_auth_project(ac: AuthClient) -> str:

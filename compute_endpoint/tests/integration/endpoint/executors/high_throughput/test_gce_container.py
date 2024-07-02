@@ -3,6 +3,11 @@ import uuid
 import pytest
 from globus_compute_endpoint.engines import GlobusComputeEngine
 
+_LAUNCH_CMD_PREFIX = (
+    "globus-compute-endpoint python-exec"
+    " parsl.executors.high_throughput.process_worker_pool"
+)
+
 
 def platinfo():
     import platform
@@ -24,7 +29,7 @@ def test_docker(tmp_path):
     container_launch_cmd = gce.executor.launch_cmd
     expected = (
         "docker run --FABRICATED -v /tmp:/tmp -t "
-        "funcx/kube-endpoint:main-3.10 process_worker_pool.py --debug"
+        f"funcx/kube-endpoint:main-3.10 {_LAUNCH_CMD_PREFIX} --debug"
     )
     assert container_launch_cmd.startswith(expected)
 
@@ -42,9 +47,7 @@ def test_apptainer(tmp_path):
     )
     gce.start(endpoint_id=uuid.uuid4(), run_dir="/tmp")
     container_launch_cmd = gce.executor.launch_cmd
-    expected = (
-        "apptainer run --FABRICATED APPTAINER_PATH process_worker_pool.py --debug"
-    )
+    expected = f"apptainer run --FABRICATED APPTAINER_PATH {_LAUNCH_CMD_PREFIX} --debug"
     assert container_launch_cmd.startswith(expected)
 
     gce.shutdown()
@@ -64,7 +67,7 @@ def test_singularity(tmp_path):
     container_launch_cmd = gce.executor.launch_cmd
     expected = (
         "singularity run /home/yadunand/kube-endpoint.py3.9.sif"
-        " process_worker_pool.py --debug"
+        f" {_LAUNCH_CMD_PREFIX} --debug"
     )
     assert container_launch_cmd.startswith(expected)
 
@@ -94,7 +97,7 @@ def test_custom(tmp_path):
     gce.start(endpoint_id=uuid.uuid4(), run_dir="/tmp")
 
     container_launch_cmd = gce.executor.launch_cmd
-    expected = f"FOO {gce.run_dir} process_worker_pool.py"
+    expected = f"FOO {gce.run_dir} {_LAUNCH_CMD_PREFIX}"
     assert container_launch_cmd.startswith(expected)
 
     gce.shutdown()
